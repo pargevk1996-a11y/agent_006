@@ -119,6 +119,19 @@ class PlanService:
         steps, estimate_warnings = await self._price_steps(draft.steps, account)
         warnings.extend(estimate_warnings)
 
+        # The catalog cannot price token-billed models, so the first pass had to guess.
+        # Now that every price is confirmed, re-plan once with the exact numbers: that
+        # downgrades a step to a cheaper model instead of dropping it outright.
+        steps, replan_warnings = await self._replan_with_exact_prices(
+            brief,
+            steps,
+            planner=planner,
+            plan_id=plan_id,
+            spendable_rub=guard.spendable_rub,
+            account=account,
+        )
+        warnings.extend(replan_warnings)
+
         steps, fit_warnings = self._drop_until_affordable(steps, guard.spendable_rub)
         warnings.extend(fit_warnings)
 
@@ -247,6 +260,53 @@ class PlanService:
             _merge_account(account, payload)
             priced.append(step)
         return priced, warnings
+
+    async def _replan_with_exact_prices(
+        self,
+        brief: Brief,
+        steps: list[PlanStep],
+        *,
+        planner: Planner,
+        plan_id: str,
+        spendable_rub: float,
+        account: AccountSnapshot,
+    ) -> tuple[list[PlanStep], list[str]]:
+        """Re-plan once using confirmed prices; keep the result only if it is better.
+
+        Runs only when the priced plan does not fit — otherwise nothing is re-planned
+        and no extra estimate calls are made.
+        """
+        total = round(sum(s.estimated_cost_rub for s in steps), 4)
+        if total <= spendable_rub:
+            return steps, []
+
+        overrides = {
+            (s.type, s.model): s.estimated_cost_rub
+            for s in steps
+            if s.kind is StepKind.GENERATION and s.type and s.model
+        }
+        draft = planner.build(
+            brief,
+            plan_id=plan_id,
+            spendable_rub=spendable_rub,
+            price_overrides=overrides,
+        )
+        candidate_steps, _ = await self._price_steps(draft.steps, account)
+        candidate_total = round(sum(s.estimated_cost_rub for s in candidate_steps), 4)
+
+        billable_before = sum(1 for s in steps if s.kind is StepKind.GENERATION)
+        billable_after = sum(1 for s in candidate_steps if s.kind is StepKind.GENERATION)
+        if candidate_total > spendable_rub or billable_after < billable_before:
+            return steps, []
+
+        changed = {
+            f"{s.step_id}: {s.model} за {s.estimated_cost_rub:.2f}₽" for s in candidate_steps
+        } - {f"{s.step_id}: {s.model} за {s.estimated_cost_rub:.2f}₽" for s in steps}
+        return candidate_steps, [
+            "План пересобран с учётом точных цен из /generate/estimate "
+            f"({total:.2f}₽ → {candidate_total:.2f}₽), чтобы сохранить все форматы: "
+            + ", ".join(sorted(changed))
+        ]
 
     def _drop_until_affordable(
         self, steps: list[PlanStep], spendable_rub: float

@@ -141,3 +141,53 @@ class TestPlanningWithTokenBilledModels:
             {"type": "text", "model": "claude-opus-5", "prompt": "x", "max_tokens": 4000}
         )
         assert estimated_cost_of(small)[0] < estimated_cost_of(big)[0]
+
+
+class TestReplanWithExactPrices:
+    async def test_step_is_downgraded_not_dropped(self, service, client):
+        """A tight budget must cost the plan quality, not a whole deliverable.
+
+        The catalog cannot price the text model, so the first pass over-commits the
+        image budget. Once the real text price arrives, the plan is rebuilt with a
+        cheaper image model instead of losing the image step.
+        """
+        # 22 ₽ is deliberately between "cheapest image fits" and "preferred image fits".
+        plan = await service.create_plan(
+            make_brief(formats=["text", "image"], budget_rub=22.0)
+        )
+        formats = {s.format.value for s in plan.steps}
+        assert formats == {"text", "image"}, "оба формата должны остаться в плане"
+        assert plan.total_estimated_rub <= plan.spendable_rub
+        assert any("пересобран" in w for w in plan.warnings)
+
+        image = next(s for s in plan.steps if s.format.value == "image")
+        assert image.kind is StepKind.GENERATION
+        assert image.estimated_cost_rub > 0
+
+    async def test_no_replan_when_the_plan_already_fits(self, service, client):
+        await service.create_plan(make_brief(formats=["text", "image"], budget_rub=500.0))
+        estimates = len(client.calls_of("estimate"))
+        assert estimates == 2, "лишних оценок при укладывающемся плане быть не должно"
+
+    async def test_replan_never_exceeds_the_budget(self, service):
+        for budget in (8.0, 12.0, 25.0, 40.0, 120.0):
+            plan = await service.create_plan(
+                make_brief(formats=["text", "image", "voice"], budget_rub=budget)
+            )
+            assert plan.total_estimated_rub <= plan.spendable_rub, f"бюджет {budget}₽ нарушен"
+
+
+class TestSynchronousTextResult:
+    async def test_copy_is_captured_from_the_generate_reply(self, service, client):
+        """Live returns the text in POST /generate; status afterwards has output: null."""
+        plan = await service.create_plan(make_brief(formats=["text"], budget_rub=200.0))
+        job = await service.execute_plan(plan.plan_id, confirmed=True)
+
+        step = job.steps[0]
+        assert step.status.value == "succeeded"
+        assert step.text_output, "текст должен быть сохранён из ответа /generate"
+        assert step.generation_id
+
+        # The status endpoint no longer carries the copy — we must not lose it.
+        status = await client.generation_status(step.generation_id)
+        assert status.get("output") is None

@@ -94,7 +94,21 @@ class Planner:
         self.policy = policy
 
     # -- public API --------------------------------------------------------
-    def build(self, brief: Brief, *, plan_id: str, spendable_rub: float) -> PlanDraft:
+    def build(
+        self,
+        brief: Brief,
+        *,
+        plan_id: str,
+        spendable_rub: float,
+        price_overrides: dict[tuple[str, str], float] | None = None,
+    ) -> PlanDraft:
+        """Build a plan that fits ``spendable_rub``.
+
+        ``price_overrides`` maps ``(type, model)`` to a price already confirmed by
+        ``/generate/estimate``. It lets the caller re-plan once with exact numbers when
+        the catalog could not price something up front (token-billed text models),
+        so a whole step is downgraded rather than dropped.
+        """
         warnings: list[str] = []
         analyses: dict[ContentFormat, FormatAnalysis] = {}
         local_steps: list[PlanStep] = []
@@ -107,7 +121,7 @@ class Planner:
                     f"(доступны: {', '.join(sorted(self.caps.models_by_type))})."
                 )
                 continue
-            analysis = self._analyse(brief, fmt)
+            analysis = self._analyse(brief, fmt, price_overrides or {})
             if not analysis.candidates:
                 warnings.append(
                     f"Формат «{fmt.value}» пропущен: ни одна модель из /capabilities не совместима "
@@ -149,7 +163,12 @@ class Planner:
         return PlanDraft(steps=steps, warnings=warnings, dropped_formats=dropped)
 
     # -- candidate analysis ------------------------------------------------
-    def _analyse(self, brief: Brief, fmt: ContentFormat) -> FormatAnalysis:
+    def _analyse(
+        self,
+        brief: Brief,
+        fmt: ContentFormat,
+        price_overrides: dict[tuple[str, str], float] | None = None,
+    ) -> FormatAnalysis:
         available = self._available_params(brief)
         candidates: list[Candidate] = []
         deferred: list[Candidate] = []
@@ -181,6 +200,13 @@ class Planner:
             bounds = price_bounds(
                 spec, params=params, per_1000_chars_types=self.policy.per_1000_chars_types
             )
+            override = (price_overrides or {}).get((fmt.value, spec.key))
+            if override is not None:
+                bounds = PriceBounds(
+                    indicative=override,
+                    upper=override,
+                    basis=f"уточнённая цена из /generate/estimate: {override:.2f}₽",
+                )
             candidate = Candidate(
                 spec=spec,
                 tier=self.policy.tier_of(fmt.value, spec.key),

@@ -252,6 +252,11 @@ class MockVibeClient(VibeClient):
             "cost": cost,
             "balance_after": self.balance_rub,
         }
+        if spec.type == "text" and not will_fail:
+            # Live behaviour: text generation is synchronous and the copy comes back
+            # here — /generation/{id}/status returns output: null afterwards.
+            response["status"] = "complete"
+            response["output"] = self._generations[generation_id]["text"]
         self._by_idempotency[key] = response
         return response
 
@@ -290,12 +295,12 @@ class MockVibeClient(VibeClient):
                 "refunded": True,
             }
         if record.get("text"):
+            # Mirrors live: the text is not repeated in the status payload.
             return {
                 **base,
                 "status": "complete",
                 "cost": record["cost"],
-                "text": record["text"],
-                "display_url": f"https://lk.vibemarketolog.ru/files/generation/{gid}?mock=1",
+                "output": None,
                 "refunded": False,
             }
         return {

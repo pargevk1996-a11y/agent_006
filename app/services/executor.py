@@ -171,6 +171,9 @@ class Executor:
             response = await self.client.generate(body)
             job_step.generation_id = _generation_id_of(response)
             job_step.task_id = response.get("task_id")
+            # Text models answer synchronously: the copy is in the /generate reply and
+            # is NOT repeated by /generation/{id}/status — capture it right here.
+            job_step.text_output = _text_of(response) or job_step.text_output
             charged = _as_float(response.get("cost"), plan_step.estimated_cost_rub)
             job_step.actual_cost_rub = charged
             await self.job_repo.update_step(
@@ -254,9 +257,7 @@ class Executor:
             job_step.display_url = status_payload.get("display_url") or status_payload.get(
                 "file_url"
             )
-            text = status_payload.get("text") or status_payload.get("result_text")
-            if isinstance(text, str) and text:
-                job_step.text_output = text
+            job_step.text_output = _text_of(status_payload) or job_step.text_output
             if final_cost != job_step.actual_cost_rub:
                 guard.release(job_step.actual_cost_rub, label=f"пересчёт {plan_step.step_id}")
                 guard.committed_rub = round(guard.committed_rub + final_cost, 4)
@@ -306,12 +307,21 @@ async def _wait_for(
         waited += interval
 
 
+def _text_of(payload: dict[str, Any]) -> str | None:
+    """Text produced by a text model, wherever the platform put it."""
+    for key in ("text", "output", "result_text", "content", "answer"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def _is_terminal(payload: dict[str, Any]) -> bool:
     """True when a /generate reply already carries the final outcome."""
     state = str(payload.get("status", "")).lower()
     if state in SUCCESS_STATUSES | {"error", "failed", "cancelled"}:
         return True
-    return isinstance(payload.get("text"), str) and bool(payload.get("text"))
+    return _text_of(payload) is not None
 
 
 def _find_step(job: Job, step_id: str) -> JobStep | None:

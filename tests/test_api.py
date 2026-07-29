@@ -99,7 +99,9 @@ class TestExecuteEndpoint:
         assert job["duration_seconds"] is not None
         for step in job["steps"]:
             assert step["status"] == "succeeded"
-            assert step["display_url"] or step["local_output"]
+            # Every finished step delivers something: a link, generated copy, or the
+            # locally composed fallback text.
+            assert step["display_url"] or step["text_output"] or step["local_output"]
 
 
 class TestJobEndpoint:
