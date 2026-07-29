@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Пример переопределения policy-таблицы (POLICY_FILE=./policy.example.json).",
+    "Здесь задаются ТОЛЬКО приоритеты и параметры по умолчанию.",
+    "Цены, обязательные/опциональные поля, enum-ы и лимиты всегда берутся из GET /capabilities.",
+    "Модель, не попавшая ни в один tier, всё равно доступна к выбору — она просто",
+    "ранжируется в нейтральном fallback-тире по цене."
+  ],
+  "format_priority": ["text", "image", "voice", "video", "music"],
+  "tiers": {
+    "image": [
+      ["z-image"],
+      ["nano-banana-2-lite", "nano-banana-*"],
+      ["seedream-*", "gpt-image-*"]
+    ],
+    "voice": [
+      ["gemini-flash-tts"],
+      ["el-tts-turbo"],
+      ["el-*"]
+    ]
+  },
+  "exclude": ["grok-extend", "grok-upscale", "*-edit", "veed-avatar", "gemini-omni-character"],
+  "defaults": {
+    "aspect_ratio": "1:1",
+    "video_duration_seconds": 4,
+    "resolution": "720p",
+    "voice_id": "Brian",
+    "voice_name": "Kore",
+    "language_code": "ru",
+    "vocal_gender": "f"
+  }
+}

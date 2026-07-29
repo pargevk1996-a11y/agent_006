@@ -1,0 +1,23 @@
+services:
+  agent:
+    build: .
+    image: vibe-budget-agent:0.1.0
+    ports:
+      - "8000:8000"
+    environment:
+      # Default stays mock: no key required, nothing can be charged.
+      APP_MODE: ${APP_MODE:-mock}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DB_PATH: /data/vibe_agent.db
+      # Secrets are passed through from the environment / .env, never baked into the image.
+      VIBE_API_TOKEN: ${VIBE_API_TOKEN:-}
+      VIBE_WEBHOOK_SECRET: ${VIBE_WEBHOOK_SECRET:-}
+      CALLBACK_BASE_URL: ${CALLBACK_BASE_URL:-}
+      MAX_BUDGET_RUB: ${MAX_BUDGET_RUB:-10000}
+    volumes:
+      - agent-data:/data
+    restart: unless-stopped
+
+volumes:
+  agent-data:
