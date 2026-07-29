@@ -140,3 +140,36 @@ class TestWebhookEndpoint:
         )
         assert response.status_code == 200
         assert response.json()["matched_step"] is None
+
+
+class TestWebhookCheckScript:
+    """The diagnostic script must fail loudly rather than pass on a broken setup."""
+
+    def _module(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "scripts" / "webhook_check.py"
+        spec = importlib.util.spec_from_file_location("webhook_check", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    async def test_local_check_passes_with_a_configured_secret(self, tmp_path):
+        from tests.conftest import make_settings
+
+        module = self._module()
+        settings = make_settings(tmp_path, vibe_webhook_secret="whsec_check_value")
+        assert await module.check_local(settings) == 0
+
+    async def test_local_check_fails_without_a_secret(self, tmp_path):
+        from tests.conftest import make_settings
+
+        module = self._module()
+        settings = make_settings(tmp_path)
+        assert await module.check_local(settings) == 1
+
+    def test_sample_event_matches_the_documented_payload(self):
+        module = self._module()
+        for field in ("event", "generation_id", "status", "cost", "refunded"):
+            assert field in module.SAMPLE_EVENT

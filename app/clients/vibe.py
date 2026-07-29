@@ -142,6 +142,15 @@ class HttpVibeClient(VibeClient):
     async def generation_status(self, generation_id: int | str) -> dict[str, Any]:
         return await self._request("GET", f"/generation/{generation_id}/status")
 
+    async def request_raw(
+        self, method: str, path: str, *, json_body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Escape hatch for endpoints outside the planning flow (e.g. /webhook-test).
+
+        Same auth, timeouts, retries and log hygiene as every other call.
+        """
+        return await self._request(method, path, json_body=json_body)
+
     async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
         """Long voiceover progress: /generate returns voiceover_id instead of a
         generation_id when the prompt exceeds the model's single-request limit."""
