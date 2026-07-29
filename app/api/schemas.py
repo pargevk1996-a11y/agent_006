@@ -34,6 +34,7 @@ class CreatePlanRequest(Brief):
                 "budget_rub": 120,
                 "style": "дружелюбный, живой, без канцелярита",
                 "aspect_ratio": "9:16",
+                "text_max_tokens": 900,
             }
         }
     }

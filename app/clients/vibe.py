@@ -142,6 +142,11 @@ class HttpVibeClient(VibeClient):
     async def generation_status(self, generation_id: int | str) -> dict[str, Any]:
         return await self._request("GET", f"/generation/{generation_id}/status")
 
+    async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
+        """Long voiceover progress: /generate returns voiceover_id instead of a
+        generation_id when the prompt exceeds the model's single-request limit."""
+        return await self._request("GET", f"/voiceover/long/{voiceover_id}")
+
     async def wait_for_generation(
         self,
         generation_id: int | str,

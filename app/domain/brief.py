@@ -55,6 +55,16 @@ class Brief(BaseModel):
         description="Stable URLs (ideally from POST /upload-media) unlocking image-to-* models",
     )
     landing_url: str | None = Field(default=None, description="Unlocks URL-driven video models")
+    text_max_tokens: int | None = Field(
+        default=None,
+        ge=100,
+        le=8000,
+        description=(
+            "Upper bound on the length of generated copy. Text models are billed per "
+            "actual tokens, and this is the only lever that bounds their price: the "
+            "platform reserves exactly this much. Defaults to the policy value."
+        ),
+    )
 
     @field_validator("formats")
     @classmethod

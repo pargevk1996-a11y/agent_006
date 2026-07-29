@@ -29,5 +29,8 @@ class VibeClient(Protocol):
     async def generation_status(self, generation_id: int | str) -> dict[str, Any]:
         """GET /generation/{id}/status."""
 
+    async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
+        """GET /voiceover/long/{id} — progress of a long (>5000 chars) voiceover."""
+
     async def aclose(self) -> None:
         ...

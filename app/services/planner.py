@@ -196,7 +196,10 @@ class Planner:
                     )
                 )
                 continue
-            params, param_warnings = self._build_params(brief, fmt, spec)
+            params, param_warnings, rejection = self._build_params(brief, fmt, spec)
+            if rejection:
+                rejected.append(RejectedCandidate(model=spec.key, reason=rejection))
+                continue
             bounds = price_bounds(
                 spec, params=params, per_1000_chars_types=self.policy.per_1000_chars_types
             )
@@ -247,8 +250,13 @@ class Planner:
     # -- parameter construction -------------------------------------------
     def _build_params(
         self, brief: Brief, fmt: ContentFormat, spec: ModelSpec
-    ) -> tuple[dict[str, Any], list[str]]:
-        """Build a request body honouring the model's own enums and limits."""
+    ) -> tuple[dict[str, Any], list[str], str | None]:
+        """Build a request body honouring the model's own enums and limits.
+
+        Returns ``(params, warnings, rejection_reason)``. A rejection reason means the
+        model cannot serve this brief without damaging it — e.g. silently cutting a
+        voiceover script the user wrote themselves.
+        """
         warnings: list[str] = []
         desired = self._desired_params(brief, fmt)
         params: dict[str, Any] = {}
@@ -268,11 +276,25 @@ class Planner:
                 warnings.append(note)
 
         prompt = prompts.prompt_for(brief, fmt)
-        limit = spec.prompt_max
+        limit = spec.effective_prompt_max
         if limit and len(prompt) > limit:
+            if fmt is ContentFormat.VOICE and brief.voiceover_script:
+                # The user supplied the exact script: cutting it is not our call.
+                return (
+                    params,
+                    warnings,
+                    f"текст озвучки {len(prompt)} символов не помещается в лимит модели "
+                    f"({limit}); модель обрезала бы сценарий",
+                )
             prompt = prompt[: limit - 1].rstrip() + "…"
             warnings.append(
                 f"{spec.key}: промпт усечён до {limit} символов (limits.prompt_max)."
+            )
+        if spec.supports_long_voiceover and len(prompt) > (spec.prompt_max or 0):
+            warnings.append(
+                f"{spec.key}: {len(prompt)} символов — платформа обработает это как длинную "
+                "озвучку (нарезка на части и склейка), результат придёт через "
+                "GET /voiceover/long/{id}."
             )
         params["prompt"] = prompt
 
@@ -283,7 +305,7 @@ class Planner:
             and "generation_type" not in params
         ):
             params["generation_type"] = "image-to-video"
-        return params, warnings
+        return params, warnings, None
 
     def _desired_params(self, brief: Brief, fmt: ContentFormat) -> dict[str, Any]:
         defaults = self.policy.defaults
@@ -294,8 +316,9 @@ class Planner:
         }
         if fmt is ContentFormat.TEXT:
             # Token-billed models: max_tokens is the only lever that bounds the cost,
-            # so it is always sent — the platform reserves exactly this much.
-            desired["max_tokens"] = defaults.get("text_max_tokens")
+            # so it is always sent — the platform reserves exactly this much. A longer
+            # text is therefore an explicit, priced decision by the caller.
+            desired["max_tokens"] = brief.text_max_tokens or defaults.get("text_max_tokens")
             desired["system"] = defaults.get("text_system")
         elif fmt is ContentFormat.VIDEO:
             desired["duration"] = brief.video_duration_seconds or defaults.get(

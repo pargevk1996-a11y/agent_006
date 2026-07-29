@@ -60,6 +60,23 @@ class ModelSpec:
         value = self.limits.get("prompt_max")
         return int(value) if isinstance(value, (int, float)) else None
 
+    @property
+    def long_voiceover_prompt_max(self) -> int | None:
+        value = self.limits.get("long_voiceover_prompt_max")
+        return int(value) if isinstance(value, (int, float)) else None
+
+    @property
+    def supports_long_voiceover(self) -> bool:
+        """Model accepts prompts beyond the single-request limit by chunking them."""
+        limit = self.long_voiceover_prompt_max
+        return limit is not None and limit > (self.prompt_max or 0)
+
+    @property
+    def effective_prompt_max(self) -> int | None:
+        """Longest prompt the model accepts, long-voiceover mode included."""
+        limits = [v for v in (self.prompt_max, self.long_voiceover_prompt_max) if v]
+        return max(limits) if limits else None
+
     def missing_required(self, available: set[str]) -> list[str]:
         return [p for p in self.required if p not in available]
 

@@ -191,3 +191,40 @@ class TestSynchronousTextResult:
         # The status endpoint no longer carries the copy — we must not lose it.
         status = await client.generation_status(step.generation_id)
         assert status.get("output") is None
+
+
+class TestTextLengthIsCallerControlled:
+    async def test_brief_value_overrides_the_policy_default(self, service, client):
+        await service.create_plan(
+            make_brief(formats=["text"], budget_rub=200.0, text_max_tokens=2500)
+        )
+        body = next(b for b in client.calls_of("estimate") if b.get("type") == "text")
+        assert body["max_tokens"] == 2500
+
+    async def test_policy_default_is_used_when_the_brief_is_silent(self, service, client, policy):
+        await service.create_plan(make_brief(formats=["text"], budget_rub=200.0))
+        body = next(b for b in client.calls_of("estimate") if b.get("type") == "text")
+        assert body["max_tokens"] == policy.defaults["text_max_tokens"]
+
+    async def test_longer_text_costs_more_and_is_visible_in_the_plan(self, service):
+        short = await service.create_plan(
+            make_brief(formats=["text"], budget_rub=200.0, text_max_tokens=500)
+        )
+        long = await service.create_plan(
+            make_brief(formats=["text"], budget_rub=200.0, text_max_tokens=4000)
+        )
+        assert long.total_estimated_rub > short.total_estimated_rub
+
+    async def test_long_text_that_breaks_the_budget_falls_back_to_local_copy(self, service):
+        plan = await service.create_plan(
+            make_brief(formats=["text"], budget_rub=10.0, text_max_tokens=8000)
+        )
+        assert plan.steps[0].kind is StepKind.LOCAL
+        assert plan.total_estimated_rub == 0.0
+
+    async def test_out_of_range_values_are_rejected(self):
+        import pydantic
+
+        for value in (10, 100_000):
+            with pytest.raises(pydantic.ValidationError):
+                make_brief(formats=["text"], budget_rub=100.0, text_max_tokens=value)

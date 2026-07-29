@@ -107,3 +107,63 @@ class TestSecretsAreNotStringified:
         dumped = repr(settings) + str(settings.model_dump())
         assert "oc_super_secret_token" not in dumped
         assert "whsec_super_secret" not in dumped
+
+
+class TestCapabilitiesSnapshot:
+    """The bundled snapshot drives mock mode and every test — it must stay sane."""
+
+    def test_snapshot_parses_and_covers_all_advertised_types(self):
+        from app.clients.mock import load_capabilities_fixture
+        from app.domain.capabilities import Capabilities
+
+        payload = load_capabilities_fixture()
+        caps = Capabilities.parse(payload)
+        assert caps.models_by_type, "в слепке нет моделей"
+        for type_ in caps.models_by_type:
+            assert type_ in caps.types, f"тип {type_} не заявлен в types"
+        for type_, models in caps.models_by_type.items():
+            for key, spec in models.items():
+                assert spec.required, f"{type_}/{key}: пустой required"
+                assert "prompt" in spec.known_params or spec.required
+
+    def test_every_model_is_priceable_or_explicitly_token_billed(self):
+        from app.clients.mock import load_capabilities_fixture
+        from app.domain.capabilities import Capabilities, price_bounds
+
+        caps = Capabilities.parse(load_capabilities_fixture())
+        for models in caps.models_by_type.values():
+            for spec in models.values():
+                bounds = price_bounds(spec)
+                assert bounds.known or spec.is_token_billed or spec.price is None, (
+                    f"{spec.key}: непонятная схема цены"
+                )
+
+    def test_diff_reports_added_removed_and_repriced_models(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "scripts" / "refresh_capabilities.py"
+        spec = importlib.util.spec_from_file_location("refresh_capabilities", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        old = {"types": ["image"], "models": {"image": {"a": {"price": 1.0}, "b": {"price": 2.0}}}}
+        new = {"types": ["image", "text"],
+               "models": {"image": {"a": {"price": 5.0}, "c": {"price": 3.0}}}}
+        report = "\n".join(module.diff(old, new))
+        assert "+ image/c" in report
+        assert "- image/b" in report
+        assert "~ image/a — цена 1.0₽ → 5.0₽" in report
+        assert "types" in report
+
+    def test_identical_payloads_produce_no_diff(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "scripts" / "refresh_capabilities.py"
+        spec = importlib.util.spec_from_file_location("refresh_capabilities", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        payload = {"types": ["image"], "models": {"image": {"a": {"price": 1.0}}}}
+        assert module.diff(payload, dict(payload)) == []

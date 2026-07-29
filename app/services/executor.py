@@ -11,6 +11,7 @@ Invariants:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -171,6 +172,9 @@ class Executor:
             response = await self.client.generate(body)
             job_step.generation_id = _generation_id_of(response)
             job_step.task_id = response.get("task_id")
+            # Prompts over the model's single-request limit are processed as a long
+            # voiceover: /generate answers with voiceover_id and a separate status URL.
+            job_step.is_long_voiceover = bool(response.get("long_voiceover"))
             # Text models answer synchronously: the copy is in the /generate reply and
             # is NOT repeated by /generation/{id}/status — capture it right here.
             job_step.text_output = _text_of(response) or job_step.text_output
@@ -194,6 +198,10 @@ class Executor:
                 )
                 raise
 
+        if job_step.is_long_voiceover:
+            await self._await_long_voiceover(plan, plan_step, job, job_step, guard)
+            return
+
         if job_step.generation_id is None:
             if _is_terminal(response):
                 # Synchronous generation (type=text): the result is already here.
@@ -206,6 +214,42 @@ class Executor:
             return
 
         await self._await_result(plan, plan_step, job, job_step, guard)
+
+    async def _await_long_voiceover(
+        self,
+        plan: Plan,
+        plan_step: PlanStep,
+        job: Job,
+        job_step: JobStep,
+        guard: BudgetGuard,
+    ) -> None:
+        """Poll GET /voiceover/long/{id} — a different endpoint with the same contract."""
+        status_fn = getattr(self.client, "voiceover_status", None)
+        if status_fn is None:
+            job_step.status = StepStatus.FAILED
+            job_step.error = "Клиент не умеет опрашивать длинную озвучку."
+            job_step.finished_at = datetime.now(UTC)
+            job.errors.append(f"{plan_step.step_id}: {job_step.error}")
+            return
+
+        waited = 0.0
+        while True:
+            payload = await status_fn(job_step.generation_id)
+            state = str(payload.get("status", "")).lower()
+            if state in SUCCESS_STATUSES | {"error", "failed", "cancelled"}:
+                await self._settle(plan, plan_step, job, job_step, guard, payload)
+                return
+            if waited >= self.poll_timeout:
+                job_step.status = StepStatus.FAILED
+                job_step.error = (
+                    f"Таймаут ожидания длинной озвучки ({waited:.0f}с). Склейка продолжается "
+                    f"на стороне платформы: GET /voiceover/long/{job_step.generation_id}."
+                )
+                job_step.finished_at = datetime.now(UTC)
+                job.errors.append(f"{plan_step.step_id}: {job_step.error}")
+                return
+            await asyncio.sleep(self.poll_interval)
+            waited += self.poll_interval
 
     async def _await_result(
         self,
@@ -294,8 +338,6 @@ async def _wait_for(
 
     # Protocol-only clients (e.g. the mock) expose just the status endpoint.
     waited = 0.0
-    import asyncio
-
     while True:
         payload = await client.generation_status(generation_id)  # type: ignore[arg-type]
         state = str(payload.get("status", "")).lower()

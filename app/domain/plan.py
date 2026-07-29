@@ -141,8 +141,9 @@ class JobStep(BaseModel):
     model: str | None = None
     status: StepStatus = StepStatus.PENDING
     idempotency_key: str
-    generation_id: int | None = None
+    generation_id: int | None = None   # or voiceover_id for a long voiceover
     task_id: str | None = None
+    is_long_voiceover: bool = False
     estimated_cost_rub: float = 0.0
     actual_cost_rub: float = 0.0
     refunded: bool = False

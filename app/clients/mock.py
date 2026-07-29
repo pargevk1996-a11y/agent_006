@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,7 @@ class MockVibeClient(VibeClient):
 
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._generations: dict[int, dict[str, Any]] = {}
+        self._voiceovers: dict[int, dict[str, Any]] = {}
         self._by_idempotency: dict[str, dict[str, Any]] = {}
         self._poll_counts: dict[int, int] = {}
         self._next_id = 5811
@@ -228,6 +230,31 @@ class MockVibeClient(VibeClient):
         self._next_id += 1
 
         will_fail = spec.key in self.fail_models or FAILURE_MARKER in str(body.get("prompt", ""))
+        prompt_len = len(str(body.get("prompt") or ""))
+        if spec.supports_long_voiceover and prompt_len > (spec.prompt_max or 0):
+            # Live behaviour: no generation_id, a voiceover_id and a separate status URL.
+            voiceover_id = self._next_id
+            self._next_id += 1
+            self._voiceovers[voiceover_id] = {
+                "voiceover_id": voiceover_id,
+                "cost": cost,
+                "will_fail": will_fail,
+                "chars": prompt_len,
+            }
+            response = {
+                "status": "processing",
+                "long_voiceover": True,
+                "voiceover_id": voiceover_id,
+                "chars": prompt_len,
+                "chunks": math.ceil(prompt_len / 4800),
+                "cost": cost,
+                "status_url": (
+                    f"https://lk.vibemarketolog.ru/api/agent/voiceover/long/{voiceover_id}"
+                ),
+            }
+            self._by_idempotency[key] = response
+            return response
+
         now = datetime.now(UTC)
         self._generations[generation_id] = {
             "generation_id": generation_id,
@@ -259,6 +286,38 @@ class MockVibeClient(VibeClient):
             response["output"] = self._generations[generation_id]["text"]
         self._by_idempotency[key] = response
         return response
+
+    async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
+        self._record("voiceover_status", {"voiceover_id": voiceover_id})
+        vid = int(voiceover_id)
+        record = self._voiceovers.get(vid)
+        if record is None:
+            raise VibeAPIError(404, code="not_found", message="Озвучка не найдена.")
+        polls = self._poll_counts.get(vid, 0)
+        self._poll_counts[vid] = polls + 1
+        if polls < self.complete_after_polls:
+            return {"status": "processing", "voiceover_id": vid, "progress": polls}
+        if record["will_fail"]:
+            if not record.get("refunded"):
+                record["refunded"] = True
+                self.balance_rub = round(self.balance_rub + record["cost"], 2)
+                self.daily_spent_rub = round(self.daily_spent_rub - record["cost"], 2)
+            return {
+                "status": "error",
+                "voiceover_id": vid,
+                "cost": 0.0,
+                "error_message": "mock: склейка длинной озвучки не удалась, средства возвращены",
+                "refunded": True,
+            }
+        return {
+            "status": "complete",
+            "voiceover_id": vid,
+            "cost": record["cost"],
+            "chars": record["chars"],
+            "result_url": f"https://mock.local/voiceover/{vid}.mp3",
+            "display_url": f"https://lk.vibemarketolog.ru/files/voiceover/{vid}?mock=1",
+            "refunded": False,
+        }
 
     async def generation_status(self, generation_id: int | str) -> dict[str, Any]:
         self._record("generation_status", {"generation_id": generation_id})
