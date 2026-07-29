@@ -22,7 +22,7 @@ from app.core.errors import (
     NotFoundError,
     ValidationError,
 )
-from app.domain.brief import Brief
+from app.domain.brief import Brief, ContentFormat
 from app.domain.capabilities import Capabilities
 from app.domain.plan import (
     AccountSnapshot,
@@ -46,6 +46,34 @@ logger = logging.getLogger(__name__)
 
 #: Price drift below this (in rubles) is treated as rounding, not a change.
 PRICE_TOLERANCE_RUB = 0.01
+
+
+def estimated_cost_of(payload: dict[str, Any]) -> tuple[float | None, str]:
+    """Authoritative per-step cost from a ``/generate/estimate`` response.
+
+    Two shapes exist in the wild:
+
+    * fixed-price models — ``estimated_cost_rub``;
+    * token-billed text models — ``estimated_cost_rub`` is ``null``, and the ceiling is
+      the reserve the platform holds: ``balance.current - balance.after_reserve``.
+
+    The reserve is a worst case (actual billing is by real tokens), which is exactly
+    what a budget guard needs. Returns ``None`` when neither is available — the caller
+    then refuses to spend.
+    """
+    cost = payload.get("estimated_cost_rub")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        return round(float(cost), 4), "estimated_cost_rub"
+
+    balance = payload.get("balance")
+    if isinstance(balance, dict):
+        current = balance.get("current")
+        reserved = balance.get("after_reserve")
+        if all(isinstance(v, (int, float)) for v in (current, reserved)):
+            delta = round(float(current) - float(reserved), 4)
+            if delta >= 0:
+                return delta, "резерв под max_tokens (balance.current − balance.after_reserve)"
+    return None, ""
 
 
 class PlanService:
@@ -93,6 +121,18 @@ class PlanService:
 
         steps, fit_warnings = self._drop_until_affordable(steps, guard.spendable_rub)
         warnings.extend(fit_warnings)
+
+        # Last chance for the copy: a paid text model may have been dropped here
+        # (unpriceable, invalid or too expensive after the real estimate). The brief
+        # still gets its text, locally and for free.
+        if ContentFormat.TEXT in brief.formats and not any(
+            s.format is ContentFormat.TEXT for s in steps
+        ):
+            steps.append(planner.local_text_step(brief, plan_id=plan_id))
+            warnings.append(
+                "Формат «text» выполнен локально и бесплатно: платная текстовая модель "
+                "не прошла оценку или не уместилась в бюджет."
+            )
 
         total = round(sum(s.estimated_cost_rub for s in steps), 4)
         billable = [s for s in steps if s.kind is StepKind.GENERATION]
@@ -179,20 +219,24 @@ class PlanService:
                 )
                 continue
 
-            cost = payload.get("estimated_cost_rub")
-            if not isinstance(cost, (int, float)):
+            cost, cost_kind = estimated_cost_of(payload)
+            if cost is None:
                 warnings.append(
                     f"Шаг «{step.step_id}» ({step.model}) исключён: платформа не вернула "
-                    "estimated_cost_rub (fail-closed)."
+                    "стоимость ни в estimated_cost_rub, ни через резерв баланса (fail-closed)."
                 )
                 continue
 
-            catalog_cost = step.estimated_cost_rub
-            step.estimated_cost_rub = round(float(cost), 4)
+            was_priced = step.cost_source != "pending_estimate"
+            catalog_note = (
+                f"оценка по /capabilities была {step.estimated_cost_rub:.2f}₽"
+                if was_priced
+                else "в /capabilities цены нет (оплата по токенам)"
+            )
+            step.estimated_cost_rub = cost
             step.cost_source = "estimate"
             step.cost_basis = (
-                f"POST /generate/estimate: {step.estimated_cost_rub:.2f}₽ "
-                f"(оценка по /capabilities была {catalog_cost:.2f}₽)"
+                f"POST /generate/estimate: {cost:.2f}₽ — {cost_kind}; {catalog_note}"
             )
             for note in payload.get("warnings") or []:
                 step.warnings.append(f"платформа: {note}")
@@ -348,14 +392,13 @@ class PlanService:
                     f"Шаг «{step.step_id}»: платформа считает запрос невалидным на момент запуска."
                 )
                 continue
-            cost = payload.get("estimated_cost_rub")
-            if not isinstance(cost, (int, float)):
+            cost, _ = estimated_cost_of(payload)
+            if cost is None:
                 blockers.append(
                     f"Шаг «{step.step_id}»: платформа не вернула стоимость — списание запрещено."
                 )
                 continue
 
-            cost = round(float(cost), 4)
             delta = round(cost - step.estimated_cost_rub, 4)
             if delta > PRICE_TOLERANCE_RUB:
                 blockers.append(

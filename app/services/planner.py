@@ -55,6 +55,10 @@ class Candidate:
     bounds: PriceBounds
     params: dict[str, Any]
     param_warnings: list[str] = field(default_factory=list)
+    #: Catalog cannot price this model (token-billed text models). Selected only as a
+    #: last resort; the real ceiling comes from /generate/estimate before any spending,
+    #: and a step that cannot be priced there is dropped rather than executed.
+    price_unknown: bool = False
 
     @property
     def key(self) -> str:
@@ -62,7 +66,7 @@ class Candidate:
 
     @property
     def cost(self) -> float:
-        return self.bounds.upper
+        return 0.0 if self.price_unknown else self.bounds.upper
 
 
 @dataclass
@@ -98,11 +102,9 @@ class Planner:
 
         for fmt in ordered:
             if not self.caps.has_models_for(fmt.value):
-                local_steps.append(self._local_step(brief, fmt, plan_id=plan_id))
                 warnings.append(
                     f"Формат «{fmt.value}»: в GET /capabilities нет моделей этого типа "
-                    f"(доступны: {', '.join(sorted(self.caps.models_by_type))}). "
-                    "Шаг выполнен локально и бесплатно, платная генерация не запускается."
+                    f"(доступны: {', '.join(sorted(self.caps.models_by_type))})."
                 )
                 continue
             analysis = self._analyse(brief, fmt)
@@ -129,6 +131,20 @@ class Planner:
                     selection={f: c.key for f, c in selection.items()},
                 )
             )
+
+        # Safety net for copy: whatever happened above — no text models in the catalog,
+        # none compatible, or the step dropped by the budget — the brief still gets its
+        # text deliverable, composed locally for 0 ₽ instead of silently disappearing.
+        if ContentFormat.TEXT in brief.formats and not any(
+            s.format is ContentFormat.TEXT for s in steps
+        ):
+            steps.append(self._local_step(brief, ContentFormat.TEXT, plan_id=plan_id))
+            warnings.append(
+                "Формат «text» выполнен локально и бесплатно: платная текстовая модель "
+                "не подошла (нет в каталоге, несовместима или не уместилась в бюджет). "
+                "Агент не выдумывает модель и не тратит деньги."
+            )
+
         steps.sort(key=lambda s: self.policy.priority_of(s.format.value))
         return PlanDraft(steps=steps, warnings=warnings, dropped_formats=dropped)
 
@@ -136,6 +152,7 @@ class Planner:
     def _analyse(self, brief: Brief, fmt: ContentFormat) -> FormatAnalysis:
         available = self._available_params(brief)
         candidates: list[Candidate] = []
+        deferred: list[Candidate] = []
         rejected: list[RejectedCandidate] = []
 
         for spec in self.caps.models_for(fmt.value):
@@ -164,22 +181,27 @@ class Planner:
             bounds = price_bounds(
                 spec, params=params, per_1000_chars_types=self.policy.per_1000_chars_types
             )
-            if not bounds.known:
-                rejected.append(
-                    RejectedCandidate(model=spec.key, reason=bounds.basis)
-                )
-                continue
-            candidates.append(
-                Candidate(
-                    spec=spec,
-                    tier=self.policy.tier_of(fmt.value, spec.key),
-                    bounds=bounds,
-                    params=params,
-                    param_warnings=param_warnings,
-                )
+            candidate = Candidate(
+                spec=spec,
+                tier=self.policy.tier_of(fmt.value, spec.key),
+                bounds=bounds,
+                params=params,
+                param_warnings=param_warnings,
+                price_unknown=not bounds.known,
             )
+            (candidates if bounds.known else deferred).append(candidate)
 
         candidates.sort(key=lambda c: self._preference_key(c, brief.strategy))
+        if not candidates and deferred:
+            # Nothing in this format has a catalog price (e.g. token-billed text models).
+            # Take them as a last resort: /generate/estimate prices them before any
+            # spending, and an unpriceable step is dropped there.
+            deferred.sort(key=lambda c: (c.tier, c.key))
+            candidates = deferred
+        else:
+            rejected.extend(
+                RejectedCandidate(model=c.key, reason=c.bounds.basis) for c in deferred
+            )
         return FormatAnalysis(fmt=fmt, type_=fmt.value, candidates=candidates, rejected=rejected)
 
     def _preference_key(self, candidate: Candidate, strategy: SelectionStrategy) -> tuple:
@@ -244,7 +266,12 @@ class Planner:
             "language_code": brief.language or defaults.get("language_code"),
             "lang": brief.language or defaults.get("language_code"),
         }
-        if fmt is ContentFormat.VIDEO:
+        if fmt is ContentFormat.TEXT:
+            # Token-billed models: max_tokens is the only lever that bounds the cost,
+            # so it is always sent — the platform reserves exactly this much.
+            desired["max_tokens"] = defaults.get("text_max_tokens")
+            desired["system"] = defaults.get("text_system")
+        elif fmt is ContentFormat.VIDEO:
             desired["duration"] = brief.video_duration_seconds or defaults.get(
                 "video_duration_seconds"
             )
@@ -395,6 +422,13 @@ class Planner:
         for other in analysis.candidates:
             if other.key == candidate.key:
                 continue
+            if other.price_unknown:
+                reason = (
+                    f"цена неизвестна до /generate/estimate (оплата по токенам), "
+                    f"policy-приоритет ниже (tier {other.tier})"
+                )
+                rejected.append(RejectedCandidate(model=other.key, reason=reason))
+                continue
             if other.tier < candidate.tier:
                 reason = (
                     f"выше по качеству (tier {other.tier}), но {other.cost:.2f}₽ "
@@ -412,11 +446,16 @@ class Planner:
         tier_label = (
             "вне policy-таблицы" if candidate.tier == FALLBACK_TIER else f"tier {candidate.tier}"
         )
+        price_note = (
+            "цена по /capabilities неизвестна: "
+            if candidate.price_unknown
+            else "цена по /capabilities: "
+        )
         reason = (
             f"Модель {candidate.key} выбрана для формата «{fmt.value}»: "
             f"совместима с брифом (required={list(candidate.spec.required) or ['—']}), "
             f"policy-приоритет — {tier_label}, "
-            f"цена по /capabilities: {candidate.bounds.basis}. "
+            f"{price_note}{candidate.bounds.basis}. "
             f"Рассмотрено кандидатов: {len(analysis.candidates)} совместимых, "
             f"{len(analysis.rejected)} отклонено на этапе совместимости."
         )
@@ -430,16 +469,20 @@ class Planner:
             params=candidate.params,
             idempotency_key=make_idempotency_key(plan_id, step_id, candidate.key, candidate.params),
             estimated_cost_rub=round(candidate.cost, 4),
-            cost_source="capabilities",
+            cost_source="pending_estimate" if candidate.price_unknown else "capabilities",
             cost_basis=candidate.bounds.basis,
             reason=reason,
             rejected_alternatives=rejected[:MAX_REPORTED_ALTERNATIVES],
             warnings=candidate.param_warnings,
         )
 
+    def local_text_step(self, brief: Brief, *, plan_id: str) -> PlanStep:
+        """Free, locally composed copy — the fallback when no paid text model fits."""
+        return self._local_step(brief, ContentFormat.TEXT, plan_id=plan_id)
+
     def _local_step(self, brief: Brief, fmt: ContentFormat, *, plan_id: str) -> PlanStep:
         step_id = f"{fmt.value}-1"
-        output = prompts.prompt_for(brief, fmt)
+        output = prompts.marketing_copy(brief)
         return PlanStep(
             step_id=step_id,
             format=fmt,
@@ -453,7 +496,8 @@ class Planner:
             cost_source="local",
             cost_basis="локальный шаг — 0₽",
             reason=(
-                f"В каталоге /capabilities нет моделей типа «{fmt.value}», поэтому агент не "
+                f"Платная модель для формата «{fmt.value}» не подошла (нет в каталоге "
+                "/capabilities, несовместима с брифом или не уместилась в бюджет). Агент не "
                 "выдумывает модель и не тратит деньги: текст собирается локально по брифу."
             ),
             local_output=output,

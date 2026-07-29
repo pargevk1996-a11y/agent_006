@@ -148,7 +148,8 @@ class JobStep(BaseModel):
     refunded: bool = False
     result_url: str | None = None
     display_url: str | None = None
-    local_output: str | None = None
+    local_output: str | None = None   # produced locally, free
+    text_output: str | None = None    # returned by a paid text model
     error: str | None = None
     attempts: int = 0
     started_at: datetime | None = None

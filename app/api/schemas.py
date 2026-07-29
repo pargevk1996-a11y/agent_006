@@ -120,6 +120,7 @@ class JobStepResponse(BaseModel):
     display_url: str | None
     result_url: str | None
     local_output: str | None
+    text_output: str | None
     error: str | None
     duration_seconds: float | None
 

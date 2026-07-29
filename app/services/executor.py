@@ -192,9 +192,14 @@ class Executor:
                 raise
 
         if job_step.generation_id is None:
+            if _is_terminal(response):
+                # Synchronous generation (type=text): the result is already here.
+                await self._settle(plan, plan_step, job, job_step, guard, response)
+                return
             job_step.status = StepStatus.FAILED
             job_step.error = "Платформа не вернула generation_id."
             job_step.finished_at = datetime.now(UTC)
+            job.errors.append(f"{plan_step.step_id}: {job_step.error}")
             return
 
         await self._await_result(plan, plan_step, job, job_step, guard)
@@ -225,6 +230,18 @@ class Executor:
             job.errors.append(f"{plan_step.step_id}: {job_step.error}")
             return
 
+        await self._settle(plan, plan_step, job, job_step, guard, status_payload)
+
+    async def _settle(
+        self,
+        plan: Plan,
+        plan_step: PlanStep,
+        job: Job,
+        job_step: JobStep,
+        guard: BudgetGuard,
+        status_payload: dict[str, Any],
+    ) -> None:
+        """Record the terminal outcome of a step and reconcile the money spent."""
         state = str(status_payload.get("status", "")).lower()
         refunded = bool(status_payload.get("refunded"))
         final_cost = _as_float(status_payload.get("cost"), job_step.actual_cost_rub)
@@ -237,6 +254,9 @@ class Executor:
             job_step.display_url = status_payload.get("display_url") or status_payload.get(
                 "file_url"
             )
+            text = status_payload.get("text") or status_payload.get("result_text")
+            if isinstance(text, str) and text:
+                job_step.text_output = text
             if final_cost != job_step.actual_cost_rub:
                 guard.release(job_step.actual_cost_rub, label=f"пересчёт {plan_step.step_id}")
                 guard.committed_rub = round(guard.committed_rub + final_cost, 4)
@@ -284,6 +304,14 @@ async def _wait_for(
             raise VibePollTimeoutError(generation_id or "?", waited)
         await asyncio.sleep(interval)
         waited += interval
+
+
+def _is_terminal(payload: dict[str, Any]) -> bool:
+    """True when a /generate reply already carries the final outcome."""
+    state = str(payload.get("status", "")).lower()
+    if state in SUCCESS_STATUSES | {"error", "failed", "cancelled"}:
+        return True
+    return isinstance(payload.get("text"), str) and bool(payload.get("text"))
 
 
 def _find_step(job: Job, step_id: str) -> JobStep | None:

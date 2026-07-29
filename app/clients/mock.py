@@ -29,6 +29,15 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capabilities.json"
 #: which is how the partial-failure path is demonstrated and tested.
 FAILURE_MARKER = "__mock_fail__"
 
+#: Approximate ₽ per token for the reserve of token-billed text models, calibrated on
+#: live /generate/estimate responses. Only the mock uses these — real pricing always
+#: comes from the platform.
+TOKEN_RATE_RUB = {"claude": 0.0076, "gpt": 0.0091}
+DEFAULT_TOKEN_RATE_RUB = 0.008
+
+#: Share of the reserve the mock actually charges, mirroring "billed per real tokens".
+TOKEN_ACTUAL_SHARE = 0.6
+
 
 def load_capabilities_fixture() -> dict[str, Any]:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -108,7 +117,20 @@ class MockVibeClient(VibeClient):
             )
         return missing, rejected
 
-    def _price(self, body: dict[str, Any], spec) -> float:
+    def _price(self, body: dict[str, Any], spec) -> tuple[float, bool]:
+        """Return ``(cost, is_reserve)``.
+
+        Token-billed text models have no catalog price: the platform answers with a
+        *reserve* for ``max_tokens`` instead of a fixed cost, and bills real tokens
+        afterwards. The mock reproduces that shape (the per-token rate here is an
+        approximation of the observed live behaviour, not a published price).
+        """
+        if spec.is_token_billed:
+            max_tokens = body.get("max_tokens")
+            tokens = float(max_tokens) if isinstance(max_tokens, (int, float)) else 1000.0
+            rate = TOKEN_RATE_RUB.get(spec.key.split("-")[0], DEFAULT_TOKEN_RATE_RUB)
+            return round(tokens * rate * self.price_multiplier, 2), True
+
         bounds = price_bounds(spec, params=body)
         if not bounds.known:
             raise VibeAPIError(
@@ -117,7 +139,7 @@ class MockVibeClient(VibeClient):
                 message=f"Для модели {spec.key} цена вычисляется только по фактическим параметрам.",
                 request_id="mock-price",
             )
-        return round(bounds.indicative * self.price_multiplier, 2)
+        return round(bounds.indicative * self.price_multiplier, 2), False
 
     # -- endpoints ---------------------------------------------------------
     async def capabilities(self) -> dict[str, Any]:
@@ -142,15 +164,21 @@ class MockVibeClient(VibeClient):
         self._record("estimate", body)
         spec = self._spec_or_error(body)
         _, rejected = self._validate(body, spec)
-        cost = self._price(body, spec)
+        cost, is_reserve = self._price(body, spec)
         within_daily = (self.daily_spent_rub + cost) <= self.daily_limit_rub
+        balance_block = (
+            {"current": self.balance_rub, "after_reserve": round(self.balance_rub - cost, 2)}
+            if is_reserve
+            else {"current": self.balance_rub, "after": round(self.balance_rub - cost, 2)}
+        )
         return {
             "valid": True,
             "dry_run": True,
             "model": spec.key,
             "type": spec.type,
-            "estimated_cost_rub": cost,
-            "balance": {"current": self.balance_rub, "after": round(self.balance_rub - cost, 2)},
+            # Token-billed models report no fixed cost — only the reserve, as live does.
+            "estimated_cost_rub": None if is_reserve else cost,
+            "balance": balance_block,
             "daily_spend": {
                 "limit": self.daily_limit_rub,
                 "today": self.daily_spent_rub,
@@ -173,16 +201,19 @@ class MockVibeClient(VibeClient):
 
         spec = self._spec_or_error(body)
         self._validate(body, spec)
-        cost = self._price(body, spec)
+        reserve, is_reserve = self._price(body, spec)
+        # Token-billed models are charged for the tokens actually produced, which is
+        # at most the reserve. Everything else is charged its fixed price.
+        cost = round(reserve * TOKEN_ACTUAL_SHARE, 2) if is_reserve else reserve
 
-        if cost > self.balance_rub:
+        if reserve > self.balance_rub:
             raise VibeAPIError(
                 402,
                 code="insufficient_balance",
-                message=f"Недостаточно средств: нужно {cost}₽, доступно {self.balance_rub}₽.",
+                message=f"Недостаточно средств: нужно {reserve}₽, доступно {self.balance_rub}₽.",
                 request_id="mock-balance",
             )
-        if self.daily_spent_rub + cost > self.daily_limit_rub:
+        if self.daily_spent_rub + reserve > self.daily_limit_rub:
             raise VibeAPIError(
                 429,
                 code="daily_spend_limit_exceeded",
@@ -207,6 +238,12 @@ class MockVibeClient(VibeClient):
             "will_fail": will_fail,
             "created_at": now.isoformat(),
             "idempotency_key": key,
+            "text": (
+                f"[mock {spec.key}] Рекламный текст по брифу: "
+                f"{str(body.get('prompt', ''))[:120]}…"
+                if spec.type == "text"
+                else None
+            ),
         }
         response = {
             "status": "processing",
@@ -251,6 +288,15 @@ class MockVibeClient(VibeClient):
                 "cost": 0.0,
                 "error_message": "mock: провайдер вернул ошибку, средства возвращены",
                 "refunded": True,
+            }
+        if record.get("text"):
+            return {
+                **base,
+                "status": "complete",
+                "cost": record["cost"],
+                "text": record["text"],
+                "display_url": f"https://lk.vibemarketolog.ru/files/generation/{gid}?mock=1",
+                "refunded": False,
             }
         return {
             **base,

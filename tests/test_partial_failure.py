@@ -49,7 +49,11 @@ class TestPartialFailure:
         voice = next(s for s in job.steps if s.format.value == "voice")
         text = next(s for s in job.steps if s.format.value == "text")
         assert voice.display_url and voice.display_url.startswith("https://")
-        assert text.local_output and text.actual_cost_rub == 0.0
+        # The copy is delivered either by a paid text model or by the free local
+        # fallback — never silently lost.
+        assert text.text_output or text.local_output
+        if text.local_output:
+            assert text.actual_cost_rub == 0.0
 
     async def test_insufficient_balance_midway_stops_remaining_steps(self, service, client):
         plan = await service.create_plan(

@@ -54,12 +54,30 @@ def music_prompt(brief: Brief) -> str:
     )
 
 
-def marketing_copy(brief: Brief) -> str:
-    """Locally composed ad copy.
+def text_prompt(brief: Brief) -> str:
+    """Instruction for a paid text model (``type: text``).
 
-    Used when ``/capabilities`` exposes no text models: the plan still delivers a
-    text asset, at zero cost and with an explicit warning, instead of silently
-    dropping the requested format or inventing a model name.
+    Note the difference from :func:`marketing_copy`: this is a *task* for the model,
+    while ``marketing_copy`` is the finished local fallback text.
+    """
+    return (
+        f"Ты — маркетолог. Напиши рекламный текст для продукта «{brief.product_name}».\n"
+        f"Что за продукт: {brief.product_description}\n"
+        f"Целевая аудитория: {brief.target_audience}\n"
+        f"Оффер: {brief.offer}\n"
+        f"Тон и стиль: {_style(brief)}\n"
+        f"Язык ответа: {brief.language}.\n"
+        "Формат ответа: 3 варианта заголовка, основной текст на 400–600 знаков, "
+        "один призыв к действию. Без вымышленных фактов, гарантий и обещаний результата."
+    )
+
+
+def marketing_copy(brief: Brief) -> str:
+    """Locally composed ad copy — the free fallback.
+
+    Used when no paid text model fits (нет в каталоге, несовместима, не влезла в
+    бюджет): план всё равно отдаёт текстовый результат за 0 ₽ и с явным
+    предупреждением, вместо того чтобы молча потерять формат или выдумать модель.
     """
     lines = [
         f"# {brief.product_name}",
@@ -89,7 +107,7 @@ PROMPT_BUILDERS = {
     ContentFormat.VIDEO: video_prompt,
     ContentFormat.VOICE: voice_script,
     ContentFormat.MUSIC: music_prompt,
-    ContentFormat.TEXT: marketing_copy,
+    ContentFormat.TEXT: text_prompt,
 }
 
 

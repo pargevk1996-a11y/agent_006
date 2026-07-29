@@ -7,6 +7,7 @@ import pytest
 from app.clients.mock import load_capabilities_fixture
 from app.domain.brief import SelectionStrategy
 from app.domain.capabilities import Capabilities, ModelSpec, price_bounds
+from app.domain.plan import StepKind
 from app.domain.policy import Policy
 from app.services.planner import Planner
 from tests.conftest import make_brief
@@ -201,12 +202,52 @@ class TestCatalogDrivenBehaviour:
         )
         assert draft.steps[0].model == "brand-new-model-x"
 
-    def test_missing_type_degrades_to_a_free_local_step(self):
+    def test_missing_text_type_degrades_to_a_free_local_step(self):
+        payload = load_capabilities_fixture()
+        payload["models"].pop("text", None)
+        planner = Planner(Capabilities.parse(payload), Policy.load(None))
+        draft = planner.build(
+            make_brief(formats=["text"], budget_rub=100.0), plan_id="p", spendable_rub=100.0
+        )
+        assert len(draft.steps) == 1
+        assert draft.steps[0].kind is StepKind.LOCAL
+        assert draft.steps[0].estimated_cost_rub == 0.0
+        assert draft.steps[0].local_output
+        assert any("локально" in w for w in draft.warnings)
+
+    def test_missing_media_type_is_skipped_not_faked(self):
+        """We can compose text locally; we cannot fake an image — so it is dropped."""
         payload = load_capabilities_fixture()
         payload["models"].pop("image")
         planner = Planner(Capabilities.parse(payload), Policy.load(None))
         draft = planner.build(
             make_brief(formats=["image"], budget_rub=100.0), plan_id="p", spendable_rub=100.0
         )
-        assert draft.steps[0].estimated_cost_rub == 0.0
-        assert any("capabilities" in w for w in draft.warnings)
+        assert draft.steps == []
+        assert any("нет моделей этого типа" in w for w in draft.warnings)
+
+
+class TestTokenBilledTextModels:
+    def test_text_model_is_selected_with_bounded_max_tokens(self, planner, caps):
+        draft = planner.build(
+            make_brief(formats=["text"], budget_rub=200.0), plan_id="p", spendable_rub=200.0
+        )
+        step = draft.steps[0]
+        assert step.model in caps.models_by_type["text"]
+        assert step.kind is StepKind.GENERATION
+        # max_tokens is the only lever bounding a token-billed price — it must be sent.
+        assert step.params["max_tokens"] > 0
+        assert step.cost_source == "pending_estimate"
+        assert "токен" in step.cost_basis
+
+    def test_unpriced_model_never_wins_over_a_priced_one(self, caps):
+        payload = load_capabilities_fixture()
+        payload["models"]["image"]["mystery-model"] = {
+            "description": "no price", "required": ["prompt"], "optional": ["max_tokens"],
+        }
+        planner = Planner(Capabilities.parse(payload), Policy.load(None))
+        draft = planner.build(
+            make_brief(formats=["image"], budget_rub=500.0), plan_id="p", spendable_rub=500.0
+        )
+        assert draft.steps[0].model != "mystery-model"
+        assert draft.steps[0].cost_source == "capabilities"

@@ -7,6 +7,52 @@
     "voice",
     "music"
   ],
+  "text_models": {
+    "note": "type=text is synchronous: POST /generate returns the answer in the same response, no polling. Billing is per actual tokens — a reserve is held by max_tokens and the unused part is refunded immediately, in the same call. Free dry run: POST /generate/estimate with type=text returns the reserve and the per-1M rates.",
+    "params": [
+      "prompt (required)",
+      "system",
+      "max_tokens",
+      "effort (low|medium|high|xhigh|max)",
+      "thinking (bool, off by default)"
+    ],
+    "response": [
+      "text",
+      "usage {input, output, cache_read, cache_write}",
+      "cost",
+      "reserved",
+      "refunded",
+      "balance_after"
+    ],
+    "models": {
+      "claude-opus-5": {
+        "label": "Claude Opus 5",
+        "rub_per_1m": {
+          "in": 1500,
+          "out": 7500,
+          "cache_read": 150
+        },
+        "min_charge_rub": 2,
+        "max_output_tokens": 8192,
+        "context_window": 200000,
+        "sample_cost_rub": 3.75,
+        "sample_note": "about 3.75₽ for a 1000-token prompt with a 300-token answer"
+      },
+      "gpt-5.6-sol": {
+        "label": "GPT-5.6 Sol",
+        "rub_per_1m": {
+          "in": 1500,
+          "out": 9000,
+          "cache_read": 150
+        },
+        "min_charge_rub": 2,
+        "max_output_tokens": 8192,
+        "context_window": 400000,
+        "sample_cost_rub": 4.2,
+        "sample_note": "about 4.2₽ for a 1000-token prompt with a 300-token answer"
+      }
+    }
+  },
   "getting_started": {
     "base_url": "https://lk.vibemarketolog.ru/api/agent",
     "auth": "Send header: Authorization: Bearer <your_token>. Get a key at https://lk.vibemarketolog.ru/agent.",
@@ -1154,6 +1200,64 @@
           "music_style",
           "style_tags"
         ]
+      }
+    },
+    "text": {
+      "claude-opus-5": {
+        "price": null,
+        "description": "Claude Opus 5 — synchronous text generation, billed per actual tokens",
+        "required": [
+          "prompt"
+        ],
+        "optional": [
+          "system",
+          "max_tokens",
+          "effort",
+          "thinking"
+        ],
+        "enums": {
+          "effort": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "limits": {
+          "max_tokens": 8192,
+          "context_window": 200000
+        },
+        "hint": "Answer comes back in the same response (no polling). Price is charged per actual tokens: 1500₽ per 1M input, 7500₽ per 1M output, minimum 2₽ per call. A reserve is held by max_tokens and the unused part is refunded immediately. thinking=true turns on reasoning (better on hard tasks, costs output tokens); it is off by default.",
+        "preserves_input": false
+      },
+      "gpt-5.6-sol": {
+        "price": null,
+        "description": "GPT-5.6 Sol — synchronous text generation, billed per actual tokens",
+        "required": [
+          "prompt"
+        ],
+        "optional": [
+          "system",
+          "max_tokens",
+          "effort",
+          "thinking"
+        ],
+        "enums": {
+          "effort": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "limits": {
+          "max_tokens": 8192,
+          "context_window": 400000
+        },
+        "hint": "Answer comes back in the same response (no polling). Price is charged per actual tokens: 1500₽ per 1M input, 9000₽ per 1M output, minimum 2₽ per call. A reserve is held by max_tokens and the unused part is refunded immediately. thinking=true turns on reasoning (better on hard tasks, costs output tokens); it is off by default.",
+        "preserves_input": false
       }
     }
   },

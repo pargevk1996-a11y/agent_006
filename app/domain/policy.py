@@ -45,6 +45,12 @@ DEFAULT_POLICY: dict[str, Any] = {
             ["suno-v5"],
             ["*-instrumental"],
         ],
+        # Text models are billed per actual tokens: /capabilities gives no price, the
+        # ceiling comes from /generate/estimate (reserve for max_tokens).
+        "text": [
+            ["claude-opus-5", "claude-*"],
+            ["gpt-5.6-sol", "gpt-*"],
+        ],
     },
     # Never auto-selected: chained/utility models that only make sense as a manual
     # follow-up to an existing generation, or that need assets we cannot produce.
@@ -61,6 +67,9 @@ DEFAULT_POLICY: dict[str, Any] = {
         "voice_name": "Puck",
         "language_code": "ru",
         "vocal_gender": "f",
+        # Only lever that bounds the price of token-billed text models.
+        "text_max_tokens": 900,
+        "text_system": "Ты пишешь рекламные тексты на русском языке кратко и по делу.",
     },
     # Parameters the agent can fill from a brief. Anything a model requires that is
     # not here (avatar_id, ref_task_id, reference_video_url, ...) makes it ineligible.
@@ -70,6 +79,7 @@ DEFAULT_POLICY: dict[str, Any] = {
         "voice_id", "voice_name", "language_code", "style", "stability", "similarity_boost",
         "speed", "temperature", "scene", "lyrics", "music_style", "style_tags",
         "vocal_gender", "lang", "callback_url", "strict", "idempotency_key",
+        "system", "max_tokens",
     ],
 }
 

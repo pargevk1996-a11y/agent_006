@@ -42,6 +42,20 @@ class ModelSpec:
         return set(self.required) | set(self.optional)
 
     @property
+    def is_token_billed(self) -> bool:
+        """Text models are billed per actual tokens: the catalog cannot price them.
+
+        ``/generate/estimate`` still bounds the cost — it reports the reserve the
+        platform holds for ``max_tokens`` (``balance.current - balance.after_reserve``).
+        """
+        return (
+            self.price is None
+            and self.per_second is None
+            and not self.tier_prices
+            and "max_tokens" in self.known_params
+        )
+
+    @property
     def prompt_max(self) -> int | None:
         value = self.limits.get("prompt_max")
         return int(value) if isinstance(value, (int, float)) else None
@@ -211,11 +225,14 @@ def price_bounds(
         )
 
     if spec.price is None:
+        basis = (
+            "оплата по фактическим токенам — потолок стоимости даёт только "
+            "/generate/estimate (резерв под max_tokens)"
+            if spec.is_token_billed
+            else "цена не опубликована в /capabilities — только через /generate/estimate"
+        )
         return PriceBounds(
-            indicative=float("inf"),
-            upper=float("inf"),
-            basis="цена не опубликована в /capabilities — только через /generate/estimate",
-            known=False,
+            indicative=float("inf"), upper=float("inf"), basis=basis, known=False
         )
 
     # 3. Character-billed types (voice): the catalog price is per started 1000 chars.
