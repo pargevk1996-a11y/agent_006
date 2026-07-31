@@ -120,6 +120,29 @@ class TestJobEndpoint:
         assert response.json()["error"] == "not_found"
 
 
+class TestWebUI:
+    async def test_root_serves_the_page(self, api_client):
+        response = await api_client.get("/")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert "Vibe Budget Agent" in response.text
+
+    async def test_page_is_self_contained(self, api_client):
+        """Ни одного внешнего адреса: страница обязана работать без интернета."""
+        body = (await api_client.get("/")).text
+
+        for marker in ("src=\"http", "href=\"http", "@import", "cdn."):
+            assert marker not in body, f"страница тянет внешний ресурс: {marker}"
+
+    async def test_page_drives_the_documented_endpoints(self, api_client):
+        body = (await api_client.get("/")).text
+
+        assert "/api/v1/plans" in body
+        assert "/api/v1/jobs/" in body
+        assert "confirmed" in body, "подтверждение — обязательный шаг перед списанием"
+
+
 class TestOpenAPI:
     async def test_schema_is_generated(self, api_client):
         response = await api_client.get("/openapi.json")
