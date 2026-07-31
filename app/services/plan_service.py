@@ -28,6 +28,7 @@ from app.core.errors import (
     NotFoundError,
     ValidationError,
 )
+from app.core.tracing import span
 from app.domain.brief import Brief, ContentFormat
 from app.domain.capabilities import Capabilities
 from app.domain.plan import (
@@ -107,6 +108,23 @@ class PlanService:
     # Planning (never bills)
     # ------------------------------------------------------------------
     async def create_plan(self, brief: Brief) -> Plan:
+        with span(
+            "plan.create",
+            budget_rub=brief.budget_rub,
+            formats=",".join(f.value for f in brief.formats),
+            strategy=brief.strategy.value,
+        ) as trace:
+            plan = await self._create_plan(brief)
+            if trace:
+                trace.set(
+                    plan_id=plan.plan_id,
+                    plan_status=plan.status.value,
+                    total_estimated_rub=plan.total_estimated_rub,
+                    steps=len(plan.steps),
+                )
+            return plan
+
+    async def _create_plan(self, brief: Brief) -> Plan:
         if brief.budget_rub > self.settings.max_budget_rub:
             raise ValidationError(
                 f"Бюджет {brief.budget_rub:.2f}₽ превышает жёсткий потолок сервиса "
@@ -424,6 +442,18 @@ class PlanService:
 
     async def run_job(self, job_id: str) -> Job:
         """Verify prices, then spend. Called by a worker, never by the request."""
+        with span("job.run", job_id=job_id) as trace:
+            job = await self._run_job(job_id)
+            if trace:
+                trace.set(
+                    plan_id=job.plan_id,
+                    job_status=job.status.value,
+                    estimated_cost_rub=job.estimated_cost_rub,
+                    actual_cost_rub=job.actual_cost_rub,
+                )
+            return job
+
+    async def _run_job(self, job_id: str) -> Job:
         job = await self.jobs.get(job_id)
         if job is None:
             raise NotFoundError(f"Задание {job_id} не найдено.")

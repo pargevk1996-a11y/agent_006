@@ -15,11 +15,26 @@ dependencies = [
     "python-multipart>=0.0.9",
 ]
 
+[project.optional-dependencies]
+# Tracing is opt-in: the default install stays dependency-light, and the demo
+# does not need a collector to run. See README §12.
+otel = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.6.0",
+    # Installed for tests so the tracing adapter is verified against the real SDK,
+    # not only in its no-op form.
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
 ]
 
 [build-system]

@@ -215,6 +215,7 @@ class HealthResponse(BaseModel):
     live_spending_enabled: bool
     queue_depth: int = 0          # jobs admitted but not yet picked up
     executor_workers: int = 0     # how many can run at once
+    tracing: str = "disabled"     # otel | available | disabled
 
 
 class WebhookAck(BaseModel):

@@ -19,6 +19,7 @@ from typing import Any
 from app.clients.base import VibeClient
 from app.clients.exceptions import VibeAPIError, VibeError, VibePollTimeoutError
 from app.core.errors import BudgetExceededError
+from app.core.tracing import span
 from app.domain.plan import (
     Job,
     JobStatus,
@@ -72,7 +73,23 @@ class Executor:
                 continue  # already done in an earlier run of this job
 
             try:
-                await self._run_step(plan, plan_step, job, job_step, guard)
+                # The one span that no auto-instrumentation can produce: which model,
+                # at what planned price, and what it actually cost.
+                with span(
+                    "step.generate",
+                    step_id=plan_step.step_id,
+                    model=plan_step.model,
+                    step_kind=plan_step.kind.value,
+                    estimated_cost_rub=plan_step.estimated_cost_rub,
+                ) as trace:
+                    await self._run_step(plan, plan_step, job, job_step, guard)
+                    if trace:
+                        trace.set(
+                            step_status=job_step.status.value,
+                            actual_cost_rub=job_step.actual_cost_rub,
+                            generation_id=job_step.generation_id,
+                            refunded=job_step.refunded,
+                        )
             except BudgetExceededError as exc:
                 job_step.status = StepStatus.SKIPPED
                 job_step.error = str(exc)

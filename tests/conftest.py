@@ -91,6 +91,32 @@ def webhook_secret() -> str:
 
 
 @pytest.fixture
+def otel_spans():
+    """Real OpenTelemetry SDK exporting into memory.
+
+    The tracing adapter is optional in production, so it is verified here against
+    the actual SDK rather than only in its no-op form: a span that silently loses
+    the cost attribute is worse than no span at all.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    # The global provider can only be set once per process; swap the private slot
+    # so each test gets a clean recorder instead of leaking spans into the next.
+    previous = trace._TRACER_PROVIDER
+    trace._TRACER_PROVIDER = provider
+    try:
+        yield exporter.get_finished_spans
+    finally:
+        trace._TRACER_PROVIDER = previous
+
+
+@pytest.fixture
 async def api_client(tmp_path: Path, webhook_secret: str):
     """The real ASGI app in mock mode: full HTTP surface, no network, no spending."""
     from app.main import create_app

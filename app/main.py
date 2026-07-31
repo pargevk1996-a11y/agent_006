@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.deps import build_client, build_plan_service
-from app.api.routers import health, jobs, media, plans, webhooks
+from app.api.routers import health, jobs, media, metrics, plans, webhooks
 from app.api.schemas import ErrorResponse
 from app.clients.exceptions import VibeAPIError, VibeError
 from app.core.config import AppMode, Settings, get_settings
@@ -177,6 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(plans.router)
     app.include_router(jobs.router)
     app.include_router(media.router)
+    app.include_router(metrics.router)
     app.include_router(webhooks.router)
     return app
 

@@ -8,6 +8,7 @@ from app.api.deps import get_client, get_database, get_job_queue, get_settings
 from app.api.schemas import HealthResponse
 from app.clients.base import VibeClient
 from app.core.config import AppMode, Settings
+from app.core.tracing import tracing_status
 from app.repositories.db import Database
 from app.services.job_queue import JobQueue
 
@@ -43,4 +44,5 @@ async def health(
         live_spending_enabled=settings.app_mode.allows_spending,
         queue_depth=queue.depth if queue else 0,
         executor_workers=queue.concurrency if queue else 0,
+        tracing=tracing_status(),
     )
