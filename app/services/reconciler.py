@@ -14,7 +14,6 @@ and never spends: the only calls it makes are status reads.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -24,6 +23,7 @@ from app.clients.exceptions import VibeAPIError, VibeError
 from app.domain.plan import Job, JobStep, StepStatus, utcnow
 from app.repositories.jobs import JobRepository, StepExecutionRecord
 from app.services.executor import TERMINAL_STATUSES, apply_outcome, terminal_status_of
+from app.services.scheduling import PeriodicTask
 
 logger = logging.getLogger(__name__)
 
@@ -41,28 +41,27 @@ class Reconciler:
         self.jobs = job_repo
         self.interval_seconds = interval_seconds
         self.min_age_seconds = min_age_seconds
-        self._task: asyncio.Task[None] | None = None
+        self._loop_task: PeriodicTask | None = None
 
     @property
     def is_running(self) -> bool:
-        return self._task is not None
+        return self._loop_task is not None and self._loop_task.is_running
 
     async def start(self) -> None:
-        if self.interval_seconds <= 0:
-            logger.info("reconciler_disabled", extra={"reason": "RECONCILE_INTERVAL_SECONDS=0"})
-            return
-        if self._task is None:
-            self._task = asyncio.create_task(self._loop(), name="reconciler")
-            logger.info(
-                "reconciler_started",
-                extra={"interval": self.interval_seconds, "min_age": self.min_age_seconds},
-            )
+        self._loop_task = PeriodicTask(
+            "reconciler", interval_seconds=self.interval_seconds, run=self._sweep_and_log
+        )
+        await self._loop_task.start()
 
     async def stop(self) -> None:
-        task, self._task = self._task, None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        if self._loop_task is not None:
+            await self._loop_task.stop()
+            self._loop_task = None
+
+    async def _sweep_and_log(self) -> None:
+        settled = await self.sweep()
+        if settled:
+            logger.info("reconcile_sweep", extra={"settled_steps": settled})
 
     async def sweep(self) -> int:
         """Settle everything that can be settled right now; returns how many."""
@@ -164,14 +163,3 @@ class Reconciler:
             job.status = final
             job.finished_at = job.finished_at or utcnow()
 
-    async def _loop(self) -> None:
-        while True:
-            await asyncio.sleep(self.interval_seconds)
-            try:
-                settled = await self.sweep()
-                if settled:
-                    logger.info("reconcile_sweep", extra={"settled_steps": settled})
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # a bad sweep must not kill the loop
-                logger.exception("reconcile_sweep_failed")

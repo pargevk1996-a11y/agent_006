@@ -17,6 +17,7 @@ from app.domain.policy import Policy
 from app.repositories.db import Database
 from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.jobs import JobRepository
+from app.repositories.media import MediaRepository
 from app.repositories.plans import PlanRepository
 from app.services.job_queue import JobQueue
 from app.services.media import MediaService
@@ -85,6 +86,7 @@ def build_plan_service(state: Any) -> PlanService:
         plan_repo=PlanRepository(state.database),
         job_repo=JobRepository(state.database),
         queue=getattr(state, "job_queue", None),
+        media_repo=MediaRepository(state.database),
     )
 
 
@@ -105,4 +107,7 @@ def get_idempotency_store(request: Request) -> IdempotencyRepository:
 
 
 def get_media_service(request: Request) -> MediaService:
-    return MediaService(client=request.app.state.client)
+    return MediaService(
+        client=request.app.state.client,
+        uploads=MediaRepository(request.app.state.database),
+    )

@@ -127,8 +127,15 @@ def _render(snapshot: MetricsSnapshot, *, mode: str, queue_depth: int, workers: 
         lines,
         "vibe_idempotency_keys_total",
         "gauge",
-        "Сохранённые ключи повтора (растут без TTL — см. README §12).",
+        "Сохранённые ключи повтора; чистятся по IDEMPOTENCY_TTL_HOURS.",
         [({}, snapshot.idempotency_keys)],
+    )
+    _family(
+        lines,
+        "vibe_media_uploads_total",
+        "gauge",
+        "Живые загруженные файлы; протухшие ссылки удаляются.",
+        [({}, snapshot.media_uploads)],
     )
     _family(
         lines,

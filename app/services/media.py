@@ -27,6 +27,7 @@ from app.clients.base import VibeClient
 from app.clients.exceptions import VibeError
 from app.core.errors import ValidationError
 from app.domain.media import MediaKind, MediaLimits
+from app.repositories.media import MediaRepository
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,10 @@ class UploadedMedia:
 
 
 class MediaService:
-    def __init__(self, *, client: VibeClient) -> None:
+    def __init__(self, *, client: VibeClient, uploads: MediaRepository | None = None) -> None:
         self.client = client
+        #: Remembering an upload is what lets the planner warn before the link dies.
+        self.uploads = uploads
 
     async def limits(self) -> MediaLimits:
         """Upload rules from the catalog, with a conservative fallback."""
@@ -80,6 +83,16 @@ class MediaService:
                 f"нельзя (получены поля: {sorted(payload)})."
             )
 
+        ttl_days = _ttl_of(payload, limits)
+        if self.uploads is not None:
+            await self.uploads.record(
+                url=url,
+                filename=filename,
+                kind=kind.name,
+                size_bytes=len(content),
+                ttl_days=ttl_days,
+            )
+
         logger.info(
             "media_uploaded",
             extra={
@@ -88,6 +101,7 @@ class MediaService:
                 "kind": kind.name,
                 "size_bytes": len(content),
                 "limits_source": limits.source,
+                "expires_in_days": ttl_days,
             },
         )
         return UploadedMedia(
@@ -96,7 +110,7 @@ class MediaService:
             content_type=content_type,
             size_bytes=len(content),
             kind=kind.name,
-            expires_in_days=_ttl_of(payload, limits),
+            expires_in_days=ttl_days,
         )
 
     def _kind_for(self, filename: str, limits: MediaLimits) -> MediaKind:

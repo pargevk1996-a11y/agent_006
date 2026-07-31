@@ -19,9 +19,12 @@ from app.core.logging import configure_logging, get_correlation_id, set_correlat
 from app.core.security import mask_secret
 from app.domain.policy import Policy
 from app.repositories.db import Database
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.jobs import JobRepository
+from app.repositories.media import MediaRepository
 from app.services.job_queue import JobQueue
 from app.services.reconciler import Reconciler
+from app.services.retention import RetentionService
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.reconciler = reconciler
         await reconciler.start()
 
+        retention = RetentionService(
+            idempotency=IdempotencyRepository(database),
+            media=MediaRepository(database),
+            interval_seconds=settings.retention_interval_seconds,
+            idempotency_ttl_hours=settings.idempotency_ttl_hours,
+        )
+        app.state.retention = retention
+        await retention.start()
+
         logger.info(
             "app_started",
             extra={
@@ -96,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await retention.stop()
             await reconciler.stop()
             await queue.stop()
             await app.state.client.aclose()

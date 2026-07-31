@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     #: Grace period before a launched step is considered stale enough to chase.
     reconcile_min_age_seconds: float = Field(default=60.0, ge=0)
 
+    # --- retention ---------------------------------------------------------
+    #: How often to purge expired replay keys and dead upload links; 0 disables.
+    retention_interval_seconds: float = Field(default=3600.0, ge=0)
+    #: A stored response stays replayable this long. Shorter = a late retry of a
+    #: real request; the default matches the usual client retry window.
+    idempotency_ttl_hours: float = Field(default=24.0, gt=0)
+    #: Warn at planning time when an uploaded link dies within this many days.
+    upload_expiry_warning_days: float = Field(default=2.0, ge=0)
+
     # --- budget guardrails -------------------------------------------------
     max_budget_rub: float = Field(default=10_000.0, gt=0)
     budget_safety_margin: float = Field(default=0.05, ge=0, lt=0.5)

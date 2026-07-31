@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS api_idempotency (
     completed_at  TEXT
 );
 
+-- Uploads we produced, with the moment their URL stops working. A plan built on
+-- an expired link fails at execution time, after the confirmation — so the
+-- expiry has to be knowable at planning time.
+CREATE TABLE IF NOT EXISTS media_uploads (
+    url         TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_expires ON media_uploads(expires_at);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     generation_id INTEGER,

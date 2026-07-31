@@ -26,6 +26,7 @@ class MetricsSnapshot:
     job_actual_rub: float = 0.0
     refunded_steps: int = 0
     idempotency_keys: int = 0
+    media_uploads: int = 0
     webhook_events: int = 0
 
     @property
@@ -69,6 +70,7 @@ class MetricsRepository:
             """
         )
         keys = await self.db.fetch_one("SELECT COUNT(*) AS n FROM api_idempotency")
+        uploads = await self.db.fetch_one("SELECT COUNT(*) AS n FROM media_uploads")
         hooks = await self.db.fetch_one("SELECT COUNT(*) AS n FROM webhook_events")
 
         return MetricsSnapshot(
@@ -80,5 +82,6 @@ class MetricsRepository:
             job_actual_rub=round(sum(row["act"] for row in jobs), 4),
             refunded_steps=refunded["n"] if refunded else 0,
             idempotency_keys=keys["n"] if keys else 0,
+            media_uploads=uploads["n"] if uploads else 0,
             webhook_events=hooks["n"] if hooks else 0,
         )

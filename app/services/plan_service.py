@@ -45,6 +45,7 @@ from app.domain.plan import (
 )
 from app.domain.policy import Policy
 from app.repositories.jobs import JobRepository
+from app.repositories.media import MediaRepository
 from app.repositories.plans import PlanRepository
 from app.services.budget import BudgetGuard
 from app.services.executor import Executor
@@ -95,12 +96,14 @@ class PlanService:
         plan_repo: PlanRepository,
         job_repo: JobRepository,
         queue: JobQueue | None = None,
+        media_repo: MediaRepository | None = None,
     ) -> None:
         self.client = client
         self.settings = settings
         self.policy = policy
         self.plans = plan_repo
         self.jobs = job_repo
+        self.media = media_repo
         #: Without a queue (scripts, unit tests) execution runs inline instead.
         self.queue = queue
 
@@ -144,7 +147,7 @@ class PlanService:
         planner = Planner(capabilities, self.policy)
         draft = planner.build(brief, plan_id=plan_id, spendable_rub=guard.spendable_rub)
 
-        warnings = [*account_warnings, *draft.warnings]
+        warnings = [*account_warnings, *draft.warnings, *await self._media_warnings(brief)]
         steps, estimate_warnings = await self._price_steps(draft.steps, account)
         warnings.extend(estimate_warnings)
 
@@ -228,6 +231,39 @@ class PlanService:
             },
         )
         return plan
+
+    async def _media_warnings(self, brief: Brief) -> list[str]:
+        """Warn about our own uploads that will not outlive the plan.
+
+        Links from ``POST /upload-media`` expire. A plan built on one that dies
+        first fails at execution — that is, *after* the user confirmed the spend,
+        which is the worst possible moment to discover it.
+        """
+        if self.media is None or not brief.reference_image_urls:
+            return []
+        known = await self.media.find_many(list(brief.reference_image_urls))
+        threshold = self.settings.upload_expiry_warning_days
+        warnings: list[str] = []
+        for url, record in sorted(known.items()):
+            remaining = record.expires_in_days()
+            if remaining <= 0:
+                warnings.append(
+                    f"Ссылка «{record.filename}» ({url}) уже недействительна — исполнение "
+                    "шага с ней упадёт. Загрузите файл заново через POST /api/v1/media."
+                )
+            elif remaining <= threshold:
+                warnings.append(
+                    f"Ссылка «{record.filename}» перестанет работать через "
+                    f"{remaining:.1f} дн. — запустите план до этого момента или "
+                    "перезагрузите файл."
+                )
+        unknown = set(brief.reference_image_urls) - set(known)
+        if unknown and known:
+            warnings.append(
+                f"Срок жизни {len(unknown)} ссылок неизвестен: они загружены не через "
+                "POST /api/v1/media, и предупредить об их истечении агент не может."
+            )
+        return warnings
 
     async def _price_steps(
         self, steps: list[PlanStep], account: AccountSnapshot

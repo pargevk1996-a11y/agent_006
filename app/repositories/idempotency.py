@@ -65,6 +65,21 @@ class IdempotencyRepository:
             (status_code, dumps(headers), dumps(body), datetime.now(UTC).isoformat(), key),
         )
 
+    async def purge_older_than(self, created_before: str) -> int:
+        """Retention. Only fully answered keys are dropped, and only past their TTL.
+
+        Deleting a key early would turn a client's retry back into a second real
+        request — the exact thing the header exists to prevent.
+        """
+        return await self.db.execute(
+            "DELETE FROM api_idempotency WHERE created_at < ? AND response_body IS NOT NULL",
+            (created_before,),
+        )
+
+    async def count(self) -> int:
+        row = await self.db.fetch_one("SELECT COUNT(*) AS n FROM api_idempotency")
+        return row["n"] if row else 0
+
     async def release(self, key: str) -> None:
         """Drop an unfinished claim so a failed attempt can be retried.
 
