@@ -257,7 +257,26 @@ APP_MODE=estimate VIBE_API_TOKEN=<ваш токен> uv run uvicorn app.main:app
 до любых сетевых вызовов. `/generate/estimate` по документации — dry-run без списания.
 
 Это рекомендуемый режим для первого запуска с настоящим ключом: вы увидите реальные цены и
-реальный баланс, ничем не рискуя.
+реальный баланс, ничем не рискуя. Так выглядит успешный прогон:
+
+```text
+GET /health   → {"mode":"estimate","upstream":"https://lk.vibemarketolog.ru/api/agent",
+                 "live_spending_enabled":false}
+
+POST /api/v1/plans {"formats":["text","image"],"budget_rub":100}  → 201, потрачено 0 ₽
+  статус : ready | итого 24.16 из 100.00 ₽
+  account: balance_rub / daily_limit_rub — настоящие значения вашего токена
+  text-1   claude-opus-5         7.66 ₽  [estimate]  резерв под max_tokens
+  image-1  nano-banana-pro-2k   16.50 ₽  [estimate]  estimated_cost_rub
+
+POST …/execute {"confirmed": true}  → 409 mode_not_allowed (до единого сетевого вызова)
+```
+
+Полезно сверить слепок каталога с живым API — это тоже бесплатно и без токена:
+
+```bash
+uv run python scripts/refresh_capabilities.py   # «✅ Изменений нет» или построчный diff
+```
 
 ## 8. Live-режим
 
