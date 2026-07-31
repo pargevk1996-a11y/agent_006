@@ -178,6 +178,34 @@ class JobResponse(BaseModel):
         )
 
 
+class MediaUploadResponse(BaseModel):
+    """A stable URL for a locally uploaded file, ready to paste into a brief."""
+
+    url: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    kind: str
+    expires_in_days: int
+    usage: str = (
+        "Подставьте url в reference_image_urls брифа — это разблокирует image-to-video "
+        "модели (veo3.1, kling-3.0, grok-itv), которым нужен image_urls."
+    )
+
+
+class MediaKindResponse(BaseModel):
+    kind: str
+    max_bytes: int
+    max_megabytes: int
+    extensions: list[str]
+
+
+class MediaLimitsResponse(BaseModel):
+    kinds: list[MediaKindResponse]
+    ttl_days: int
+    source: str  # capabilities | fallback
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     mode: str

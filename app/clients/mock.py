@@ -287,6 +287,22 @@ class MockVibeClient(VibeClient):
         self._by_idempotency[key] = response
         return response
 
+    async def upload_media(
+        self, *, filename: str, content: bytes, content_type: str
+    ) -> dict[str, Any]:
+        """Deterministic stand-in: same bytes always yield the same stable URL."""
+        self._record(
+            "upload_media",
+            {"filename": filename, "content_type": content_type, "size_bytes": len(content)},
+        )
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+        return {
+            "status": "ok",
+            "url": f"https://lk.vibemarketolog.ru/files/media/{digest}.{suffix}?mock=1",
+            "expires_in_days": 7,
+        }
+
     async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
         self._record("voiceover_status", {"voiceover_id": voiceover_id})
         vid = int(voiceover_id)

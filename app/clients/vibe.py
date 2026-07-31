@@ -74,13 +74,18 @@ class HttpVibeClient(VibeClient):
             await self._client.aclose()
 
     async def _request(
-        self, method: str, path: str, *, json_body: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async def attempt() -> dict[str, Any]:
             started = time.monotonic()
             try:
                 response = await self._client.request(
-                    method, path, json=json_body, headers=self._auth_headers()
+                    method, path, json=json_body, files=files, headers=self._auth_headers()
                 )
             except httpx.TimeoutException as exc:
                 raise VibeNetworkError(f"timeout calling {method} {path}: {exc!r}") from exc
@@ -141,6 +146,14 @@ class HttpVibeClient(VibeClient):
 
     async def generation_status(self, generation_id: int | str) -> dict[str, Any]:
         return await self._request("GET", f"/generation/{generation_id}/status")
+
+    async def upload_media(
+        self, *, filename: str, content: bytes, content_type: str
+    ) -> dict[str, Any]:
+        """Upload a file and get back a stable URL. Free — nothing is billed here."""
+        return await self._request(
+            "POST", "/upload-media", files={"file": (filename, content, content_type)}
+        )
 
     async def request_raw(
         self, method: str, path: str, *, json_body: dict[str, Any] | None = None

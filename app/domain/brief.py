@@ -52,7 +52,11 @@ class Brief(BaseModel):
     reference_image_urls: list[str] = Field(
         default_factory=list,
         max_length=7,
-        description="Stable URLs (ideally from POST /upload-media) unlocking image-to-* models",
+        description=(
+            "Стабильные URL, разблокирующие image-to-* модели. Получить можно через "
+            "POST /api/v1/media — он проксирует загрузку на платформу и возвращает "
+            "готовую ссылку."
+        ),
     )
     landing_url: str | None = Field(default=None, description="Unlocks URL-driven video models")
     text_max_tokens: int | None = Field(

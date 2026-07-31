@@ -19,6 +19,7 @@ from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.plans import PlanRepository
 from app.services.job_queue import JobQueue
+from app.services.media import MediaService
 from app.services.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
@@ -101,3 +102,7 @@ def get_job_repository(request: Request) -> JobRepository:
 
 def get_idempotency_store(request: Request) -> IdempotencyRepository:
     return IdempotencyRepository(request.app.state.database)
+
+
+def get_media_service(request: Request) -> MediaService:
+    return MediaService(client=request.app.state.client)

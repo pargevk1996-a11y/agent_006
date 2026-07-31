@@ -32,5 +32,10 @@ class VibeClient(Protocol):
     async def voiceover_status(self, voiceover_id: int | str) -> dict[str, Any]:
         """GET /voiceover/long/{id} — progress of a long (>5000 chars) voiceover."""
 
+    async def upload_media(
+        self, *, filename: str, content: bytes, content_type: str
+    ) -> dict[str, Any]:
+        """POST /upload-media — a stable URL for a file. Free, never billed."""
+
     async def aclose(self) -> None:
         ...

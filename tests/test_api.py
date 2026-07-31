@@ -128,5 +128,6 @@ class TestOpenAPI:
         assert "/api/v1/plans" in paths
         assert "/api/v1/plans/{plan_id}/execute" in paths
         assert "/api/v1/jobs/{job_id}" in paths
+        assert "/api/v1/media" in paths
         assert "/api/v1/webhooks/vibe" in paths
         assert "/health" in paths
