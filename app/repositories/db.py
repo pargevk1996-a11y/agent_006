@@ -56,6 +56,19 @@ CREATE TABLE IF NOT EXISTS step_executions (
 );
 CREATE INDEX IF NOT EXISTS idx_step_generation ON step_executions(generation_id);
 
+-- Replay protection for *our own* API: one row per Idempotency-Key the caller
+-- sent, holding the response we already produced for it.
+CREATE TABLE IF NOT EXISTS api_idempotency (
+    key           TEXT PRIMARY KEY,
+    endpoint      TEXT NOT NULL,
+    request_hash  TEXT NOT NULL,
+    status_code   INTEGER,
+    headers       TEXT,
+    response_body TEXT,          -- NULL while the first attempt is still running
+    created_at    TEXT NOT NULL,
+    completed_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     generation_id INTEGER,

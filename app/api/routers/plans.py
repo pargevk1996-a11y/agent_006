@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Path, Response
+from fastapi import APIRouter, Depends, Header, Path, Response
 
-from app.api.deps import get_plan_service
+from app.api.deps import get_idempotency_store, get_plan_service
+from app.api.idempotency import with_idempotency
 from app.api.schemas import (
     CreatePlanRequest,
     ExecuteRequest,
@@ -14,11 +15,22 @@ from app.api.schemas import (
     PlanResponse,
 )
 from app.domain.plan import JobStatus
+from app.repositories.idempotency import IdempotencyRepository
 from app.services.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
+
+IDEMPOTENCY_KEY = Header(
+    default=None,
+    alias="Idempotency-Key",
+    description=(
+        "Необязательный ключ повтора. Повторный запрос с тем же ключом и тем же телом "
+        "возвращает сохранённый ответ первой попытки (заголовок Idempotency-Replayed: true) "
+        "и не выполняет работу заново; тот же ключ с другим телом — 409."
+    ),
+)
 
 
 @router.post(
@@ -33,10 +45,23 @@ router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
 )
 async def create_plan(
     payload: CreatePlanRequest,
+    response: Response,
     service: PlanService = Depends(get_plan_service),
-) -> PlanResponse:
-    plan = await service.create_plan(payload)
-    return PlanResponse.from_plan(plan)
+    store: IdempotencyRepository = Depends(get_idempotency_store),
+    idempotency_key: str | None = IDEMPOTENCY_KEY,
+):
+    async def produce() -> tuple[PlanResponse, int]:
+        plan = await service.create_plan(payload)
+        return PlanResponse.from_plan(plan), 201
+
+    return await with_idempotency(
+        store=store,
+        key=idempotency_key,
+        endpoint="POST /api/v1/plans",
+        body=payload.model_dump(mode="json"),
+        response=response,
+        produce=produce,
+    )
 
 
 @router.get("/{plan_id}", response_model=PlanResponse, summary="Получить сохранённый план")
@@ -67,11 +92,23 @@ async def execute_plan(
     response: Response,
     plan_id: str = Path(...),
     service: PlanService = Depends(get_plan_service),
-) -> JobResponse:
-    job = await service.execute_plan(
-        plan_id, confirmed=payload.confirmed, wait=payload.wait
+    store: IdempotencyRepository = Depends(get_idempotency_store),
+    idempotency_key: str | None = IDEMPOTENCY_KEY,
+):
+    async def produce() -> tuple[JobResponse, int]:
+        job = await service.execute_plan(
+            plan_id, confirmed=payload.confirmed, wait=payload.wait
+        )
+        response.headers["Location"] = f"/api/v1/jobs/{job.job_id}"
+        return JobResponse.from_job(job), 202 if job.status is JobStatus.QUEUED else 200
+
+    return await with_idempotency(
+        store=store,
+        key=idempotency_key,
+        # Scoped to the plan: the same key against a different plan is a different
+        # request, not a retry.
+        endpoint=f"POST /api/v1/plans/{plan_id}/execute",
+        body=payload.model_dump(mode="json"),
+        response=response,
+        produce=produce,
     )
-    response.headers["Location"] = f"/api/v1/jobs/{job.job_id}"
-    if job.status is not JobStatus.QUEUED:
-        response.status_code = 200
-    return JobResponse.from_job(job)

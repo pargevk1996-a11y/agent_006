@@ -15,6 +15,7 @@ from app.clients.vibe import HttpVibeClient
 from app.core.config import AppMode, Settings
 from app.domain.policy import Policy
 from app.repositories.db import Database
+from app.repositories.idempotency import IdempotencyRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.plans import PlanRepository
 from app.services.job_queue import JobQueue
@@ -96,3 +97,7 @@ def get_job_queue(request: Request) -> JobQueue | None:
 
 def get_job_repository(request: Request) -> JobRepository:
     return JobRepository(request.app.state.database)
+
+
+def get_idempotency_store(request: Request) -> IdempotencyRepository:
+    return IdempotencyRepository(request.app.state.database)
