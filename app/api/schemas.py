@@ -47,6 +47,13 @@ class ExecuteRequest(BaseModel):
         default=False,
         description="Must be true. Any other value refuses execution without spending.",
     )
+    wait: bool = Field(
+        default=False,
+        description=(
+            "Дождаться завершения в этом же запросе и вернуть 200 вместо 202. "
+            "Удобно для демо и коротких планов; по умолчанию исполнение асинхронное."
+        ),
+    )
 
     model_config = {"json_schema_extra": {"example": {"confirmed": True}}}
 
@@ -178,6 +185,8 @@ class HealthResponse(BaseModel):
     database: str
     upstream: str
     live_spending_enabled: bool
+    queue_depth: int = 0          # jobs admitted but not yet picked up
+    executor_workers: int = 0     # how many can run at once
 
 
 class WebhookAck(BaseModel):

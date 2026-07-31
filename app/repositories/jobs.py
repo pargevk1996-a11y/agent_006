@@ -12,7 +12,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
-from app.domain.plan import Job, StepStatus
+from app.domain.plan import Job, JobStatus, StepStatus
 from app.repositories.db import Database, dumps
 
 
@@ -77,6 +77,52 @@ class JobRepository:
             (plan_id,),
         )
         return Job.model_validate_json(row["document"]) if row else None
+
+    async def claim_for_execution(self, job_id: str) -> bool:
+        """Take ownership of a queued job. ``False`` means somebody else has it.
+
+        This conditional ``UPDATE`` is the lock that keeps async execution safe:
+        a duplicate enqueue, a second worker or a restart-recovery pass can all
+        target the same job, and only the one that flips ``queued → running``
+        proceeds. The status lives in both the column and the JSON document, so
+        they are moved together in a single statement.
+        """
+        changed = await self.db.execute(
+            """
+            UPDATE jobs
+               SET status = ?,
+                   document = json_set(document, '$.status', ?, '$.started_at', ?)
+             WHERE job_id = ? AND status = ?
+            """,
+            (
+                JobStatus.RUNNING.value,
+                JobStatus.RUNNING.value,
+                datetime.now(UTC).isoformat(),
+                job_id,
+                JobStatus.QUEUED.value,
+            ),
+        )
+        return changed == 1
+
+    async def requeue(self, job_id: str) -> None:
+        """Put a job back in line — used to resume work after a restart."""
+        await self.db.execute(
+            """
+            UPDATE jobs
+               SET status = ?,
+                   document = json_set(document, '$.status', ?)
+             WHERE job_id = ?
+            """,
+            (JobStatus.QUEUED.value, JobStatus.QUEUED.value, job_id),
+        )
+
+    async def unfinished_job_ids(self) -> list[str]:
+        """Jobs a previous process left mid-flight, oldest first."""
+        rows = await self.db.fetch_all(
+            "SELECT job_id FROM jobs WHERE status IN (?, ?) ORDER BY created_at",
+            (JobStatus.QUEUED.value, JobStatus.RUNNING.value),
+        )
+        return [row["job_id"] for row in rows]
 
     async def find_by_generation(self, generation_id: int) -> tuple[Job, str] | None:
         """Locate the job and step a webhook refers to."""

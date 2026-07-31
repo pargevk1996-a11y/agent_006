@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 from fastapi import Request
@@ -16,6 +17,7 @@ from app.domain.policy import Policy
 from app.repositories.db import Database
 from app.repositories.jobs import JobRepository
 from app.repositories.plans import PlanRepository
+from app.services.job_queue import JobQueue
 from app.services.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
@@ -68,15 +70,28 @@ def get_policy(request: Request) -> Policy:
     return request.app.state.policy
 
 
-def get_plan_service(request: Request) -> PlanService:
-    state = request.app.state
+def build_plan_service(state: Any) -> PlanService:
+    """Assemble the service from application state.
+
+    Shared by the request path and the background workers — a worker has no
+    ``Request``, but needs exactly the same wiring.
+    """
     return PlanService(
         client=state.client,
         settings=state.settings,
         policy=state.policy,
         plan_repo=PlanRepository(state.database),
         job_repo=JobRepository(state.database),
+        queue=getattr(state, "job_queue", None),
     )
+
+
+def get_plan_service(request: Request) -> PlanService:
+    return build_plan_service(request.app.state)
+
+
+def get_job_queue(request: Request) -> JobQueue | None:
+    return getattr(request.app.state, "job_queue", None)
 
 
 def get_job_repository(request: Request) -> JobRepository:

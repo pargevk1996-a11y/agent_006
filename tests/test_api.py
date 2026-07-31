@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.conftest import execute_and_wait
+
 BRIEF = {
     "product_name": "CRM для мастеров маникюра",
     "product_description": "Онлайн-запись, напоминания и учёт расходников.",
@@ -86,13 +88,9 @@ class TestExecuteEndpoint:
         response = await api_client.post(f"/api/v1/plans/{plan_id}/execute", json={})
         assert response.status_code == 400
 
-    async def test_confirmed_execution_returns_job_report(self, api_client):
+    async def test_confirmed_execution_produces_a_job_report(self, api_client):
         plan = (await api_client.post("/api/v1/plans", json=BRIEF)).json()
-        response = await api_client.post(
-            f"/api/v1/plans/{plan['plan_id']}/execute", json={"confirmed": True}
-        )
-        assert response.status_code == 200
-        job = response.json()
+        job = await execute_and_wait(api_client, plan["plan_id"])
         assert job["status"] == "succeeded"
         assert job["actual_cost_rub"] <= job["budget_rub"]
         assert job["budget_remaining_rub"] >= 0
@@ -107,16 +105,11 @@ class TestExecuteEndpoint:
 class TestJobEndpoint:
     async def test_job_report_contains_costs_and_links(self, api_client):
         plan = (await api_client.post("/api/v1/plans", json=BRIEF)).json()
-        job_id = (
-            await api_client.post(
-                f"/api/v1/plans/{plan['plan_id']}/execute", json={"confirmed": True}
-            )
-        ).json()["job_id"]
+        job = await execute_and_wait(api_client, plan["plan_id"])
 
-        response = await api_client.get(f"/api/v1/jobs/{job_id}")
+        response = await api_client.get(f"/api/v1/jobs/{job['job_id']}")
         assert response.status_code == 200
         job = response.json()
-        assert job["job_id"] == job_id
         assert job["plan_id"] == plan["plan_id"]
         assert {s["step_id"] for s in job["steps"]} == {s["step_id"] for s in plan["steps"]}
         assert job["errors"] == []

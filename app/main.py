@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.deps import build_client
+from app.api.deps import build_client, build_plan_service
 from app.api.routers import health, jobs, plans, webhooks
 from app.api.schemas import ErrorResponse
 from app.clients.exceptions import VibeAPIError, VibeError
@@ -19,10 +19,28 @@ from app.core.logging import configure_logging, get_correlation_id, set_correlat
 from app.core.security import mask_secret
 from app.domain.policy import Policy
 from app.repositories.db import Database
+from app.repositories.jobs import JobRepository
+from app.services.job_queue import JobQueue
 
 logger = logging.getLogger(__name__)
 
 CORRELATION_HEADER = "X-Correlation-Id"
+
+
+async def _recover_unfinished_jobs(database: Database, queue: JobQueue) -> None:
+    """Re-queue jobs a previous process left mid-flight.
+
+    Safe by construction: the step ledger already holds the ``generation_id`` of
+    everything that was launched, so a resumed job waits for those results
+    instead of paying for them again.
+    """
+    repo = JobRepository(database)
+    job_ids = await repo.unfinished_job_ids()
+    for job_id in job_ids:
+        await repo.requeue(job_id)
+        await queue.enqueue(job_id)
+    if job_ids:
+        logger.warning("jobs_recovered", extra={"count": len(job_ids), "job_ids": job_ids})
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -38,6 +56,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.policy = Policy.load(settings.policy_file)
         app.state.client = build_client(settings)
 
+        async def run_job(job_id: str) -> None:
+            await build_plan_service(app.state).run_job(job_id)
+
+        queue = JobQueue(run_job, concurrency=settings.executor_concurrency)
+        app.state.job_queue = queue
+        await queue.start()
+        await _recover_unfinished_jobs(database, queue)
+
         logger.info(
             "app_started",
             extra={
@@ -48,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "token": mask_secret(settings.token_value),
                 "webhook_secret_configured": bool(settings.webhook_secret_value),
                 "callback_url": settings.callback_url or "<polling only>",
+                "executor_workers": settings.executor_concurrency,
             },
         )
         if settings.app_mode is AppMode.LIVE:
@@ -58,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await queue.stop()
             await app.state.client.aclose()
             await database.close()
             logger.info("app_stopped")

@@ -37,6 +37,7 @@ class StepStatus(StrEnum):
 
 class JobStatus(StrEnum):
     PENDING = "pending"
+    QUEUED = "queued"    # accepted by /execute, waiting for a worker; nothing spent yet
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
@@ -51,6 +52,11 @@ class JobStatus(StrEnum):
             JobStatus.FAILED,
             JobStatus.ABORTED,
         }
+
+    @property
+    def is_active(self) -> bool:
+        """Queued or already running — a second execute must not create a rival job."""
+        return self in {JobStatus.QUEUED, JobStatus.RUNNING}
 
 
 class RejectedCandidate(BaseModel):

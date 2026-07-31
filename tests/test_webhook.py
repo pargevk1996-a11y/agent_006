@@ -101,9 +101,12 @@ class TestWebhookEndpoint:
                 },
             )
         ).json()
+        # wait=true: this test is about matching a callback to a step, so the
+        # generation_id has to exist by the time the request returns.
         job = (
             await api_client.post(
-                f"/api/v1/plans/{plan['plan_id']}/execute", json={"confirmed": True}
+                f"/api/v1/plans/{plan['plan_id']}/execute",
+                json={"confirmed": True, "wait": True},
             )
         ).json()
         generation_id = job["steps"][0]["generation_id"]

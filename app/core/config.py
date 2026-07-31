@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = Field(default=10.0, gt=0)
     poll_timeout_seconds: float = Field(default=900.0, gt=0)
 
+    # --- background execution ----------------------------------------------
+    #: How many confirmed plans may execute at once. Each job is claimed in the
+    #: database first, so raising this cannot cause a plan to be executed twice.
+    executor_concurrency: int = Field(default=2, ge=1, le=16)
+
     # --- budget guardrails -------------------------------------------------
     max_budget_rub: float = Field(default=10_000.0, gt=0)
     budget_safety_margin: float = Field(default=0.05, ge=0, lt=0.5)

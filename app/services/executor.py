@@ -393,6 +393,17 @@ def _describe(error: Exception) -> str:
     return str(error)
 
 
+def terminal_status_of(job: Job) -> JobStatus | None:
+    """Final status of a job whose steps have all settled, else ``None``.
+
+    Used by the webhook handler: when the platform reports the last outstanding
+    step, the job is finished even though no executor loop is watching it.
+    """
+    if any(s.status in {StepStatus.PENDING, StepStatus.RUNNING} for s in job.steps):
+        return None
+    return _aggregate_status(job, aborted=False)
+
+
 def _aggregate_status(job: Job, *, aborted: bool) -> JobStatus:
     statuses = [s.status for s in job.steps]
     succeeded = sum(1 for s in statuses if s is StepStatus.SUCCEEDED)

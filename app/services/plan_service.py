@@ -4,6 +4,12 @@ Planning never spends: it reads ``/capabilities``, snapshots the account and
 prices every step through ``/generate/estimate`` (a documented dry-run).
 Execution re-verifies everything from scratch and stops before the first ruble
 if anything drifted.
+
+``execute_plan`` only *admits* a job — it writes a ``queued`` row and returns.
+The verification and the spending happen in :meth:`PlanService.run_job`, which a
+worker calls after claiming the job in the database. Everything that can be
+decided without touching the network (confirmation, mode, feasibility, replay)
+still answers the caller synchronously, so a bad request fails fast.
 """
 
 from __future__ import annotations
@@ -34,12 +40,14 @@ from app.domain.plan import (
     PlanStep,
     StepKind,
     StepStatus,
+    utcnow,
 )
 from app.domain.policy import Policy
 from app.repositories.jobs import JobRepository
 from app.repositories.plans import PlanRepository
 from app.services.budget import BudgetGuard
 from app.services.executor import Executor
+from app.services.job_queue import JobQueue
 from app.services.planner import Planner, capabilities_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -85,12 +93,15 @@ class PlanService:
         policy: Policy,
         plan_repo: PlanRepository,
         job_repo: JobRepository,
+        queue: JobQueue | None = None,
     ) -> None:
         self.client = client
         self.settings = settings
         self.policy = policy
         self.plans = plan_repo
         self.jobs = job_repo
+        #: Without a queue (scripts, unit tests) execution runs inline instead.
+        self.queue = queue
 
     # ------------------------------------------------------------------
     # Planning (never bills)
@@ -361,7 +372,13 @@ class PlanService:
     # ------------------------------------------------------------------
     # Execution (bills, and only with explicit confirmation)
     # ------------------------------------------------------------------
-    async def execute_plan(self, plan_id: str, *, confirmed: bool) -> Job:
+    async def execute_plan(self, plan_id: str, *, confirmed: bool, wait: bool = False) -> Job:
+        """Admit a confirmed plan for execution.
+
+        Returns a ``queued`` job as soon as the local gates pass; the caller polls
+        ``GET /jobs/{id}`` or waits for the webhook. ``wait=True`` runs the job in
+        this call instead — handy for demos, short plans and offline tests.
+        """
         plan = await self.plans.get(plan_id)
         if plan is None:
             raise NotFoundError(f"План {plan_id} не найден.")
@@ -378,9 +395,7 @@ class PlanService:
             raise ConflictError("План невыполним: нет ни одного шага, укладывающегося в бюджет.")
 
         existing = await self.jobs.get_by_plan(plan_id)
-        if existing is not None and (
-            existing.status.is_terminal or existing.status is JobStatus.RUNNING
-        ):
+        if existing is not None and (existing.status.is_terminal or existing.status.is_active):
             logger.info(
                 "execute_replay",
                 extra={"plan_id": plan_id, "job_id": existing.job_id,
@@ -388,32 +403,73 @@ class PlanService:
             )
             return existing
 
+        job = _new_job(plan, warnings=[], errors=[])
+        job.status = JobStatus.QUEUED
+        await self.jobs.save(job)
+        # The plan now owns a job; its status only becomes `executed` once a worker
+        # has actually claimed the job, so an aborted attempt leaves it re-runnable.
+        plan.job_id = job.job_id
+        await self.plans.save(plan)
+
+        if wait or self.queue is None:
+            return await self.run_job(job.job_id)
+
+        await self.queue.enqueue(job.job_id)
+        logger.info(
+            "execute_accepted",
+            extra={"plan_id": plan_id, "job_id": job.job_id,
+                   "estimated_cost_rub": job.estimated_cost_rub},
+        )
+        return job
+
+    async def run_job(self, job_id: str) -> Job:
+        """Verify prices, then spend. Called by a worker, never by the request."""
+        job = await self.jobs.get(job_id)
+        if job is None:
+            raise NotFoundError(f"Задание {job_id} не найдено.")
+        if not await self.jobs.claim_for_execution(job_id):
+            current = await self.jobs.get(job_id)
+            logger.info(
+                "job_claim_skipped",
+                extra={"job_id": job_id,
+                       "job_status": current.status.value if current else "missing"},
+            )
+            return current or job
+
+        job = await self.jobs.get(job_id)
+        assert job is not None  # claimed one line above
+        plan = await self.plans.get(job.plan_id)
+        if plan is None:  # pragma: no cover - defensive
+            return await self._abort_job(
+                job, [f"План {job.plan_id} недоступен — исполнение остановлено без списания."]
+            )
+
         account, account_warnings = await self._account_snapshot()
         guard = BudgetGuard(
             budget_rub=plan.budget_rub,
             safety_margin=self.settings.budget_safety_margin,
             account=account,
         )
+        job.warnings.extend(account_warnings)
 
-        recheck_warnings, blockers = await self._recheck_prices(plan, guard)
-        warnings = [*account_warnings, *recheck_warnings]
-
-        if blockers:
-            job = _new_job(plan, warnings=warnings, errors=blockers)
-            job.status = JobStatus.ABORTED
-            for step in job.steps:
-                step.status = StepStatus.SKIPPED
-                step.error = "Исполнение отменено до списания."
-            await self.jobs.save(job)
-            await self.plans.attach_job(plan_id, job.job_id, plan.status.value)
-            logger.warning(
-                "execute_aborted",
-                extra={"plan_id": plan_id, "job_id": job.job_id, "blockers": blockers},
+        launched = [s for s in job.steps if s.generation_id is not None]
+        if launched:
+            # Resumed after a restart: these steps are already paid for upstream.
+            # Re-pricing them now would be pointless, and a price blip would abort a
+            # job whose money is gone — so we only wait for the outstanding results.
+            guard.committed_rub = round(sum(s.actual_cost_rub for s in job.steps), 4)
+            job.warnings.append(
+                "Исполнение возобновлено после перезапуска: шаги "
+                + ", ".join(f"«{s.step_id}»" for s in launched)
+                + " уже запущены, повторная оценка цен пропущена — агент дожидается "
+                "результатов, не списывая повторно."
             )
-            return job
+        else:
+            recheck_warnings, blockers = await self._recheck_prices(plan, guard)
+            job.warnings.extend(recheck_warnings)
+            if blockers:
+                return await self._abort_job(job, blockers)
 
-        job = _new_job(plan, warnings=warnings, errors=[])
-        await self.jobs.save(job)
         plan.job_id = job.job_id
         plan.status = PlanStatus.EXECUTED
         await self.plans.save(plan)
@@ -426,6 +482,22 @@ class PlanService:
             poll_timeout=self.settings.poll_timeout_seconds,
         )
         return await executor.run(plan, job, guard)
+
+    async def _abort_job(self, job: Job, blockers: list[str]) -> Job:
+        """Terminal state for a job stopped before the first ruble."""
+        job.status = JobStatus.ABORTED
+        job.errors.extend(blockers)
+        job.finished_at = utcnow()
+        for step in job.steps:
+            if step.status is StepStatus.PENDING:
+                step.status = StepStatus.SKIPPED
+                step.error = "Исполнение отменено до списания."
+        await self.jobs.save(job)
+        logger.warning(
+            "execute_aborted",
+            extra={"plan_id": job.plan_id, "job_id": job.job_id, "blockers": blockers},
+        )
+        return job
 
     async def _recheck_prices(
         self, plan: Plan, guard: BudgetGuard

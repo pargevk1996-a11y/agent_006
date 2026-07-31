@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     FOREIGN KEY (plan_id) REFERENCES plans(plan_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_plan ON jobs(plan_id);
+-- Startup recovery scans this: jobs left queued/running by a killed process.
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 
 -- One row per (plan, step). The UNIQUE constraint is the guarantee that a step
 -- is never launched twice under two different idempotency keys.
@@ -94,10 +96,16 @@ class Database:
             raise RuntimeError("Database.connect() must be awaited before use")
         return self._conn
 
-    async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+    async def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """Run a statement and return the number of affected rows.
+
+        The row count is what makes a conditional ``UPDATE`` usable as a lock:
+        exactly one caller can see ``1`` for the same state transition.
+        """
         async with self._lock:
-            await self.conn.execute(sql, params)
+            cursor = await self.conn.execute(sql, params)
             await self.conn.commit()
+            return cursor.rowcount
 
     async def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
         async with self._lock, self.conn.execute(sql, params) as cursor:

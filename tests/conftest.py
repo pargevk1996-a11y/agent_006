@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import httpx
@@ -103,11 +105,40 @@ async def api_client(tmp_path: Path, webhook_secret: str):
             yield client
 
 
-def make_service(client, settings, database, policy=None) -> PlanService:
+def make_service(client, settings, database, policy=None, queue=None) -> PlanService:
     return PlanService(
         client=client,
         settings=settings,
         policy=policy or Policy.load(None),
         plan_repo=PlanRepository(database),
         job_repo=JobRepository(database),
+        queue=queue,
     )
+
+
+TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "aborted"}
+
+
+async def wait_for_job(
+    api_client, job_id: str, *, timeout: float = 5.0  # noqa: ASYNC109 - polling budget
+) -> dict:
+    """Poll a job until it settles — the client-side half of async execution."""
+    deadline = time.monotonic() + timeout
+    while True:
+        body = (await api_client.get(f"/api/v1/jobs/{job_id}")).json()
+        if body["status"] in TERMINAL_JOB_STATUSES:
+            return body
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job {job_id} завис в статусе {body['status']}")
+        await asyncio.sleep(0.01)
+
+
+async def execute_and_wait(
+    api_client, plan_id: str, *, timeout: float = 5.0  # noqa: ASYNC109 - polling budget
+) -> dict:
+    """POST /execute (async) and poll until the job reaches a terminal status."""
+    response = await api_client.post(
+        f"/api/v1/plans/{plan_id}/execute", json={"confirmed": True}
+    )
+    assert response.status_code in {200, 202}, response.text
+    return await wait_for_job(api_client, response.json()["job_id"], timeout=timeout)

@@ -3,6 +3,10 @@
 The signature is verified against the **raw** request bytes before the body is
 parsed. An unsigned or wrongly signed webhook is rejected with 401 and changes
 nothing — a forged callback must never be able to mark a step as paid-and-done.
+
+With asynchronous execution this is also a completion path: when a callback
+settles the last outstanding step, the job is finished here, without waiting for
+an executor loop to notice.
 """
 
 from __future__ import annotations
@@ -16,8 +20,9 @@ from app.api.deps import get_job_repository, get_settings
 from app.api.schemas import WebhookAck
 from app.core.config import Settings
 from app.core.errors import ValidationError
-from app.domain.plan import JobStatus, StepStatus
+from app.domain.plan import StepStatus, utcnow
 from app.repositories.jobs import JobRepository
+from app.services.executor import terminal_status_of
 from app.services.webhooks import verify_webhook
 
 logger = logging.getLogger(__name__)
@@ -111,9 +116,10 @@ def _apply(job, step_id: str, payload: dict) -> None:
         step.error = str(payload.get("error_message") or "Генерация завершилась ошибкой.")
 
     job.actual_cost_rub = round(sum(s.actual_cost_rub for s in job.steps), 4)
-    if all(s.status is StepStatus.SUCCEEDED for s in job.steps):
-        job.status = JobStatus.SUCCEEDED
-    elif any(s.status is StepStatus.SUCCEEDED for s in job.steps) and any(
-        s.status in {StepStatus.FAILED, StepStatus.SKIPPED} for s in job.steps
-    ):
-        job.status = JobStatus.PARTIAL
+
+    # Only conclude the job when nothing is outstanding: a callback for step 1 of 3
+    # says nothing about the job as a whole.
+    final = terminal_status_of(job)
+    if final is not None and not job.status.is_terminal:
+        job.status = final
+        job.finished_at = job.finished_at or utcnow()

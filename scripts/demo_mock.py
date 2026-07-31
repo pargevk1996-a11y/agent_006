@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Mock demo: brief → plan → confirmed execution, entirely offline.
 
-Runs the real planner, budget guard, executor and SQLite storage against the
-mock client (a recorded snapshot of GET /capabilities). No token, no network,
-no spending. Usage::
+Runs the real planner, budget guard, job queue, executor and SQLite storage
+against the mock client (a recorded snapshot of GET /capabilities). No token,
+no network, no spending. Usage::
 
     uv run python scripts/demo_mock.py [--budget 400]
 """
@@ -26,6 +26,7 @@ from app.domain.policy import Policy
 from app.repositories.db import Database
 from app.repositories.jobs import JobRepository
 from app.repositories.plans import PlanRepository
+from app.services.job_queue import JobQueue
 from app.services.plan_service import PlanService
 
 BRIEF = {
@@ -65,6 +66,11 @@ async def main(budget: float) -> int:
             plan_repo=PlanRepository(database),
             job_repo=JobRepository(database),
         )
+        # The same queue the HTTP app runs: /execute only admits the job, a
+        # background worker claims it and does the spending.
+        queue = JobQueue(service.run_job, concurrency=settings.executor_concurrency)
+        service.queue = queue
+        await queue.start()
 
         hr(f"1. ПЛАН (бюджет {budget:.0f} ₽, списаний нет)")
         plan = await service.create_plan(Brief(**BRIEF, budget_rub=budget))
@@ -104,7 +110,13 @@ async def main(budget: float) -> int:
             print(f"отказано: {type(exc).__name__}: {exc}")
 
         hr("3. ИСПОЛНЕНИЕ С confirmed=true (mock, деньги не настоящие)")
-        job = await service.execute_plan(plan.plan_id, confirmed=True)
+        accepted = await service.execute_plan(plan.plan_id, confirmed=True)
+        print(
+            f"принято: job_id={accepted.job_id}, статус «{accepted.status.value}», "
+            f"списано {accepted.actual_cost_rub:.2f} ₽ — исполнение ушло в фон"
+        )
+        await queue.drain()
+        job = await service.get_job(accepted.job_id)
         print(f"job_id : {job.job_id}")
         print(f"статус : {job.status.value}  за {job.duration_seconds} c")
         print(
@@ -128,6 +140,7 @@ async def main(budget: float) -> int:
         print(f"остаток mock-баланса: {client.balance_rub:.2f} ₽")
 
         assert job.actual_cost_rub <= plan.budget_rub, "budget invariant violated"
+        await queue.stop()
         await database.close()
         print("\n✅ Бюджет не превышен, повторное списание не выполнено.")
     return 0
