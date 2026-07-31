@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     #: How many confirmed plans may execute at once. Each job is claimed in the
     #: database first, so raising this cannot cause a plan to be executed twice.
     executor_concurrency: int = Field(default=2, ge=1, le=16)
+    #: How often to re-ask the platform about paid-but-unreported steps; 0 disables.
+    reconcile_interval_seconds: float = Field(default=300.0, ge=0)
+    #: Grace period before a launched step is considered stale enough to chase.
+    reconcile_min_age_seconds: float = Field(default=60.0, ge=0)
 
     # --- budget guardrails -------------------------------------------------
     max_budget_rub: float = Field(default=10_000.0, gt=0)

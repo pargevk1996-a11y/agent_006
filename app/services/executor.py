@@ -34,6 +34,8 @@ from app.services.budget import BudgetGuard
 logger = logging.getLogger(__name__)
 
 SUCCESS_STATUSES = {"complete", "completed", "success"}
+#: Platform states that will not change any more — the verdict has arrived.
+TERMINAL_STATUSES = SUCCESS_STATUSES | {"error", "failed", "cancelled"}
 
 
 class Executor:
@@ -236,7 +238,7 @@ class Executor:
         while True:
             payload = await status_fn(job_step.generation_id)
             state = str(payload.get("status", "")).lower()
-            if state in SUCCESS_STATUSES | {"error", "failed", "cancelled"}:
+            if state in TERMINAL_STATUSES:
                 await self._settle(plan, plan_step, job, job_step, guard, payload)
                 return
             if waited >= self.poll_timeout:
@@ -289,32 +291,14 @@ class Executor:
         status_payload: dict[str, Any],
     ) -> None:
         """Record the terminal outcome of a step and reconcile the money spent."""
-        state = str(status_payload.get("status", "")).lower()
-        refunded = bool(status_payload.get("refunded"))
-        final_cost = _as_float(status_payload.get("cost"), job_step.actual_cost_rub)
-        job_step.refunded = refunded
-        job_step.finished_at = datetime.now(UTC)
-
-        if state in SUCCESS_STATUSES:
-            job_step.status = StepStatus.SUCCEEDED
-            job_step.result_url = status_payload.get("result_url")
-            job_step.display_url = status_payload.get("display_url") or status_payload.get(
-                "file_url"
-            )
-            job_step.text_output = _text_of(status_payload) or job_step.text_output
-            if final_cost != job_step.actual_cost_rub:
-                guard.release(job_step.actual_cost_rub, label=f"пересчёт {plan_step.step_id}")
-                guard.committed_rub = round(guard.committed_rub + final_cost, 4)
-                job_step.actual_cost_rub = final_cost
-        else:
-            job_step.status = StepStatus.FAILED
-            job_step.error = str(
-                status_payload.get("error_message") or "Генерация завершилась ошибкой."
-            )
+        previous_cost = job_step.actual_cost_rub
+        final_cost = apply_outcome(job_step, status_payload)
+        if job_step.status is StepStatus.FAILED:
             job.errors.append(f"{plan_step.step_id}: {job_step.error}")
-            if refunded or final_cost == 0:
-                guard.release(job_step.actual_cost_rub, label=f"возврат {plan_step.step_id}")
-                job_step.actual_cost_rub = 0.0
+        if final_cost != previous_cost:
+            guard.release(previous_cost, label=f"пересчёт {plan_step.step_id}")
+            guard.committed_rub = round(guard.committed_rub + final_cost, 4)
+        job_step.actual_cost_rub = final_cost
 
         await self.job_repo.update_step(
             plan_id=plan.plan_id,
@@ -391,6 +375,35 @@ def _describe(error: Exception) -> str:
             parts.append(f"request_id={error.request_id}")
         return " | ".join(parts)
     return str(error)
+
+
+def apply_outcome(job_step: JobStep, payload: dict[str, Any]) -> float:
+    """Write a terminal verdict onto a step; return the cost it settles at.
+
+    Shared by the executor, which watched the generation, and the reconciler,
+    which finds out about it later — a step must settle identically whoever
+    learns the outcome first.
+    """
+    state = str(payload.get("status", "")).lower()
+    refunded = bool(payload.get("refunded"))
+    final_cost = _as_float(payload.get("cost"), job_step.actual_cost_rub)
+    job_step.refunded = refunded
+    job_step.finished_at = datetime.now(UTC)
+
+    if state in SUCCESS_STATUSES:
+        job_step.status = StepStatus.SUCCEEDED
+        job_step.result_url = payload.get("result_url") or job_step.result_url
+        job_step.display_url = (
+            payload.get("display_url") or payload.get("file_url") or job_step.display_url
+        )
+        job_step.text_output = _text_of(payload) or job_step.text_output
+        job_step.error = None
+        return final_cost
+
+    job_step.status = StepStatus.FAILED
+    job_step.error = str(payload.get("error_message") or "Генерация завершилась ошибкой.")
+    # A refund (or a zero charge) means the money came back; anything else stands.
+    return 0.0 if (refunded or final_cost == 0) else final_cost
 
 
 def terminal_status_of(job: Job) -> JobStatus | None:

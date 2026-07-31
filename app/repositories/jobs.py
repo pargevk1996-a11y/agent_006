@@ -15,6 +15,8 @@ from typing import Any
 from app.domain.plan import Job, JobStatus, StepStatus
 from app.repositories.db import Database, dumps
 
+_TERMINAL_JOB_STATUSES = tuple(s.value for s in JobStatus if s.is_terminal)
+
 
 def request_hash(body: dict[str, Any]) -> str:
     payload = dumps({k: v for k, v in sorted(body.items()) if k != "callback_url"})
@@ -185,6 +187,31 @@ class JobRepository:
         record = await self.get_step(plan_id, step_id)
         assert record is not None
         return record
+
+    async def stale_steps(self, *, updated_before: str) -> list[StepExecutionRecord]:
+        """Launched steps that never got a verdict, inside jobs that already ended.
+
+        These are the ones the money is at risk on: the platform was paid and
+        started work, but the answer never arrived — a poll that hit its timeout,
+        a webhook that never came, a process killed mid-wait.
+
+        Only steps of *terminal* jobs are listed. While a job is running an
+        executor is still watching that generation (or startup recovery will pick
+        it up), and two settlers on one step is a race not worth having.
+        """
+        rows = await self.db.fetch_all(
+            f"""
+            SELECT s.* FROM step_executions s
+              JOIN jobs j ON j.job_id = s.job_id
+             WHERE s.status = ?
+               AND s.generation_id IS NOT NULL
+               AND s.updated_at < ?
+               AND j.status IN ({", ".join("?" * len(_TERMINAL_JOB_STATUSES))})
+             ORDER BY s.updated_at
+            """,  # noqa: S608 - placeholders only, the interpolation is their count
+            (StepStatus.RUNNING.value, updated_before, *_TERMINAL_JOB_STATUSES),
+        )
+        return [StepExecutionRecord(row) for row in rows]
 
     async def get_step(self, plan_id: str, step_id: str) -> StepExecutionRecord | None:
         row = await self.db.fetch_one(

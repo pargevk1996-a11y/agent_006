@@ -21,6 +21,7 @@ from app.domain.policy import Policy
 from app.repositories.db import Database
 from app.repositories.jobs import JobRepository
 from app.services.job_queue import JobQueue
+from app.services.reconciler import Reconciler
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await queue.start()
         await _recover_unfinished_jobs(database, queue)
 
+        reconciler = Reconciler(
+            client=app.state.client,
+            job_repo=JobRepository(database),
+            interval_seconds=settings.reconcile_interval_seconds,
+            min_age_seconds=settings.reconcile_min_age_seconds,
+        )
+        app.state.reconciler = reconciler
+        await reconciler.start()
+
         logger.info(
             "app_started",
             extra={
@@ -75,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "webhook_secret_configured": bool(settings.webhook_secret_value),
                 "callback_url": settings.callback_url or "<polling only>",
                 "executor_workers": settings.executor_concurrency,
+                "reconcile_interval": settings.reconcile_interval_seconds,
             },
         )
         if settings.app_mode is AppMode.LIVE:
@@ -85,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await reconciler.stop()
             await queue.stop()
             await app.state.client.aclose()
             await database.close()
